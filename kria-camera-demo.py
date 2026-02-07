@@ -22,7 +22,7 @@ def check_and_elevate_privileges():
         print("Re-executing with sudo...")
 
         # Re-execute the script with sudo
-        args = ['sudo', sys.executable] + sys.argv
+        args = ['sudo', '-E', sys.executable] + sys.argv
         os.execvp('sudo', args)
 
 
