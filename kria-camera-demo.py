@@ -8,6 +8,7 @@ from pynq_dpu import DpuOverlay
 import re
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -54,31 +55,28 @@ def parse_prototxt(prototxt_path):
     }
 
 
-
-
-def predict_label(softmax):
-
-    return np.argmax(softmax) - 1
-
-
-
-
 class KriaCameraDemo:
     """Main class for Kria camera demo with DPU inference."""
 
-    def __init__(self, prototxt_path, model_path, dpu_bit_path):
+    def __init__(self, prototxt_path, model_path, dpu_bit_path, labels_path):
         """Initialize the camera demo with DPU model and normalization parameters.
 
         Args:
             prototxt_path: Path to the prototxt file with normalization parameters
             model_path: Path to the DPU xmodel file
             dpu_bit_path: Path to the DPU bitstream file
+            labels_path: Path to the words.txt file with class labels
         """
         # Load normalization parameters
         print(f"Loading normalization parameters from {prototxt_path}...")
         self.norm_params = parse_prototxt(prototxt_path)
         print(f"Mean values (BGR): {self.norm_params['mean']}")
         print(f"Scale values (BGR): {self.norm_params['scale']}")
+
+        # Load class labels
+        print(f"Loading class labels from {labels_path}...")
+        self.labels = KriaCameraDemo.load_labels(labels_path)
+        print(f"Loaded {len(self.labels)} class labels")
 
         # Initialize RealSense pipeline
         self.pipeline = rs.pipeline()
@@ -133,9 +131,56 @@ class KriaCameraDemo:
         return depth_image, color_image
 
     @staticmethod
+    def load_labels(labels_path):
+        """Load ImageNet class labels from words.txt file.
+
+        Args:
+            labels_path: Path to the words.txt file containing class labels
+
+        Returns:
+            list: List of label strings, indexed by class ID
+        """
+        labels = []
+        with open(labels_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    labels.append(line)
+        return labels
+
+    @staticmethod
+    def predict_label(softmax, top_k=5):
+        """Get top-k predictions from softmax output.
+
+        Args:
+            softmax: Softmax probability array
+            top_k: Number of top predictions to return
+
+        Returns:
+            list: List of tuples (class_index, confidence) sorted by confidence descending
+        """
+        # Get top-k indices sorted by confidence (descending)
+        top_indices = np.argsort(softmax)[-top_k:][::-1]
+
+        # Get corresponding confidence values
+        top_confidences = softmax[top_indices]
+
+        # Return list of (index, confidence) tuples
+        return [(int(idx), float(conf)) for idx, conf in zip(top_indices, top_confidences)]
+
+    @staticmethod
     def calculate_softmax(data):
-        result = np.exp(data)
-        return result
+        """Calculate softmax probabilities from logits.
+
+        Args:
+            data: Raw logits from model output
+
+        Returns:
+            numpy.ndarray: Normalized softmax probabilities (sum to 1.0)
+        """
+        # Subtract max for numerical stability
+        exp_data = np.exp(data - np.max(data))
+        return exp_data / np.sum(exp_data)
 
     def make_prediction(self, color_image):
         """Run inference on the input image using DPU.
@@ -144,7 +189,8 @@ class KriaCameraDemo:
             color_image: Input color image
 
         Returns:
-            int: Predicted label
+            tuple: (predictions, inference_time) where predictions is a list of
+                   tuples (class_index, confidence) and inference_time is in seconds
         """
         # Apply normalization to color image
         normalized_image = KriaCameraDemo.preprocess_fn(
@@ -156,14 +202,18 @@ class KriaCameraDemo:
         image = self.input_data[0]
         image[0,...] = normalized_image.reshape(self.shapeIn[1:])
 
+        # Measure DPU execution time
+        start_time = time.perf_counter()
         job_id = self.dpu.execute_async(self.input_data, self.output_data)
         self.dpu.wait(job_id)
+        end_time = time.perf_counter()
+        inference_time = end_time - start_time
 
         temp = [j.reshape(1, self.outputSize) for j in self.output_data]
         softmax = KriaCameraDemo.calculate_softmax(temp[0][0])
 
-        label = predict_label(softmax)
-        return label
+        predictions = KriaCameraDemo.predict_label(softmax, top_k=5)
+        return predictions, inference_time
 
     @staticmethod
     def resize_shortest_edge(image, size):
@@ -187,7 +237,7 @@ class KriaCameraDemo:
 
     @staticmethod
     def preprocess_fn(image, means, scales, crop_height = 224, crop_width = 224):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = KriaCameraDemo.resize_shortest_edge(image, 256)
         image = KriaCameraDemo.normalize_image(image, means, scales)
         image = KriaCameraDemo.central_crop(image, crop_height, crop_width)
@@ -221,9 +271,23 @@ class KriaCameraDemo:
             color_image: Input color image (BGR format)
 
         Returns:
-            int: Predicted label
+            tuple: (predictions, inference_time) where predictions is a list of
+                   tuples (class_index, confidence) and inference_time is in seconds
         """
         return self.make_prediction(color_image)
+
+    def get_label_text(self, label_index):
+        """Get the text label for a given class index.
+
+        Args:
+            label_index: Integer class index (0-999)
+
+        Returns:
+            str: Text label or "Unknown" if index is out of range
+        """
+        if 0 <= label_index < len(self.labels):
+            return self.labels[label_index]
+        return f"Unknown (index {label_index})"
 
     def cleanup(self):
         """Release all resources."""
@@ -246,7 +310,8 @@ def main():
     demo = KriaCameraDemo(
         prototxt_path=Path("models/mobilenet_v2/mobilenet_v2.prototxt"),
         model_path="./models/mobilenet_v2/mobilenet_v2.xmodel",
-        dpu_bit_path="dpu.bit"
+        dpu_bit_path="dpu.bit",
+        labels_path="words.txt"
     )
 
     try:
@@ -260,9 +325,11 @@ def main():
             if depth_image is None or color_image is None:
                 continue
 
-            # Run prediction
-            label = demo.predict(color_image)
-            print(f"Predicted label: {label}")
+            # Run prediction - returns top-5 predictions and inference time
+            predictions, inference_time = demo.predict(color_image)
+
+            # Calculate FPS from inference time
+            fps = 1.0 / inference_time if inference_time > 0 else 0
 
             # Apply colormap on depth image
             depth_colormap = cv2.applyColorMap(
@@ -270,8 +337,26 @@ def main():
                 cv2.COLORMAP_WINTER
             )
 
+            # Add performance info and top-5 predictions to color image
+            display_image = color_image.copy()
+
+            # Display inference time and FPS at the top
+            perf_text = f"DPU: {inference_time*1000:.1f}ms ({fps:.1f} FPS)"
+            cv2.putText(display_image, perf_text, (10, 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+            # Display top-5 predictions
+            y_offset = 50
+            for i, (label_idx, confidence) in enumerate(predictions, 1):
+                label_text = demo.get_label_text(label_idx)
+                # Format: "1. [152] 95.2% - Chihuahua"
+                text = f"{i}. [{label_idx}] {confidence:.1%} - {label_text[:30]}"
+                cv2.putText(display_image, text, (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                y_offset += 25
+
             # Stack images horizontally: color | depth
-            images = np.hstack((color_image, depth_colormap))
+            images = np.hstack((display_image, depth_colormap))
 
             # Show images
             cv2.imshow('RealSense - Color | Depth', images)
