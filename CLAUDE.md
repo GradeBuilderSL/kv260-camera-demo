@@ -31,6 +31,11 @@ rsync -avz --exclude=venv --exclude=.git --exclude=__pycache__ ./ ubuntu@192.168
 ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py"
 ```
 
+**Run with custom model:**
+```bash
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py -m models/custom_model"
+```
+
 **Note:** Root permissions are required for PYNQ DPU overlay to access hardware MMIO registers.
 
 **Install dependencies on Kria:**
@@ -45,12 +50,22 @@ Use the VSCode task "Run on Kria (192.168.100.8)" which automatically deploys fi
 
 ### Main Application: kria-camera-demo.py
 
-The primary application captures and visualizes RealSense camera streams:
+The primary application captures and visualizes RealSense camera streams with DPU inference:
 
-1. **Pipeline Setup**: Configures Intel RealSense pipeline with depth (640x480, z16, 30fps) and color (640x480, BGR8, 30fps) streams
-2. **Frame Capture**: Continuously reads coherent depth and color frame pairs
-3. **Visualization**: Converts depth to colormap (using WINTER colormap) and displays side-by-side with color feed via OpenCV
-4. **Exit**: Press 'q' to quit the application
+**Command-Line Options:**
+- `-m, --model-dir`: Path to model directory containing meta.json (default: models/mobilenet_v2)
+- `-b, --dpu-bit`: Path to DPU bitstream file (default: dpu.bit)
+- `-l, --labels`: Path to class labels file (default: words.txt)
+
+**Application Flow:**
+
+1. **Model Loading**: Reads meta.json from model directory to get model filename and constructs paths for .xmodel and .prototxt files
+2. **Pipeline Setup**: Configures Intel RealSense pipeline with depth (640x480, z16, 30fps) and color (640x480, BGR8, 30fps) streams
+3. **DPU Initialization**: Loads DPU overlay and model for hardware-accelerated inference
+4. **Frame Capture**: Continuously reads coherent depth and color frame pairs
+5. **Inference**: Runs MobileNet V2 classification on color frames using DPU
+6. **Visualization**: Displays results with top-5 predictions, FPS metrics, and system stats
+7. **Exit**: Press 'q' to quit the application
 
 ### Dependencies
 

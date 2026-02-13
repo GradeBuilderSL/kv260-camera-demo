@@ -4,10 +4,14 @@ A real-time camera demonstration for AMD Xilinx Kria KV260 Vision AI Starter Kit
 
 ## Features
 
-- Real-time Intel RealSense camera stream capture (640x480 @ 30fps)
-- Simultaneous color and depth image visualization
-- DPU overlay integration for AI acceleration
-- Color-mapped depth visualization using OpenCV
+- **Real-time Object Classification**: MobileNet V2 inference on live RealSense camera feed
+- **Dual FPS Monitoring**: Displays both overall frame rate and DPU inference speed
+- **System Monitoring**: Live display of power consumption, temperatures, CPU utilization, and memory usage
+- **Top-5 Predictions**: Shows top 5 classification results with confidence scores
+- **Smart Text Rendering**: Auto-contrast text overlays with semi-transparent backgrounds for maximum readability
+- **Organized Display**: Sectioned interface with "Classification" and "System Info" headers
+- **Depth Visualization**: Color-mapped depth stream using OpenCV (640x480 @ 30fps)
+- **Modular Architecture**: Clean separation of concerns across multiple modules
 
 ## Hardware Requirements
 
@@ -67,6 +71,47 @@ cd ~/kria-camera-demo
 sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py
 ```
 
+### Command-Line Options
+
+```bash
+python3 kria-camera-demo.py [OPTIONS]
+
+Options:
+  -m, --model-dir PATH   Path to model directory containing meta.json
+                        (default: models/mobilenet_v2)
+  -b, --dpu-bit PATH    Path to DPU bitstream file (default: dpu.bit)
+  -l, --labels PATH     Path to class labels file (default: words.txt)
+  -h, --help           Show help message
+```
+
+### Model Directory Structure
+
+The model directory must contain:
+- `meta.json` - Model metadata with the following structure:
+  ```json
+  {
+      "lib": "libvart-dpu-runner.so",
+      "filename": "mobilenet_v2.xmodel",
+      "kernel": ["subgraph_263"],
+      "target": "DPUCZDX8G_ISA1_B4096"
+  }
+  ```
+- `<model_name>.xmodel` - The compiled DPU model file (specified in meta.json filename field)
+- `<model_name>.prototxt` - Preprocessing metadata with normalization parameters
+
+### Using a Different Model
+
+```bash
+# Use a custom model directory
+sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py -m models/resnet50
+
+# Specify all paths
+sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py \
+  -m models/custom_model \
+  -b custom_dpu.bit \
+  -l custom_labels.txt
+```
+
 ### Run via VS Code Task
 
 Use the "Run on Kria" task which automatically deploys and executes the demo.
@@ -78,13 +123,37 @@ Use the "Run on Kria" task which automatically deploys and executes the demo.
 
 ## Project Structure
 
+The codebase has been refactored into modular components for better maintainability:
+
 ```
 kria-camera-demo/
-├── kria-camera-demo.py    # Main application
-├── requirements.txt        # Python dependencies
-├── README.md              # This file
-└── dpu.bit                # DPU overlay bitstream (required)
+├── kria-camera-demo.py      # Main entry point with visualization loop
+├── camera_demo/             # Core package modules
+│   ├── __init__.py          # Package initialization and exports
+│   ├── kria_camera_demo.py  # Core KriaCameraDemo class
+│   ├── utils.py             # General utilities (privileges, config parsing, labels)
+│   ├── preprocessing.py     # Image preprocessing pipeline for DPU
+│   ├── visualization.py     # Display and text rendering helpers
+│   └── platform_monitor.py  # System statistics monitoring (PlatformMonitor class)
+├── requirements.txt         # Python dependencies
+├── README.md               # This file
+├── models/                 # Model files (MobileNet V2)
+│   └── mobilenet_v2/
+│       ├── mobilenet_v2.xmodel
+│       └── mobilenet_v2.prototxt
+├── words.txt               # ImageNet class labels
+└── dpu.bit                 # DPU overlay bitstream (required)
 ```
+
+### Module Descriptions
+
+- **`kria-camera-demo.py`**: Main entry point that initializes the application and runs the display loop
+- **`camera_demo/`**: Python package containing all core modules
+  - **`kria_camera_demo.py`**: `KriaCameraDemo` class orchestrating camera, DPU inference, and monitoring
+  - **`utils.py`**: Privilege checking, prototxt parsing, and label loading utilities
+  - **`preprocessing.py`**: Image preprocessing (resize, crop, normalize) for MobileNet V2
+  - **`visualization.py`**: Smart text rendering with auto-contrast and semi-transparent backgrounds
+  - **`platform_monitor.py`**: Background thread monitoring power, temperature, CPU, and memory stats
 
 ## Dependencies
 

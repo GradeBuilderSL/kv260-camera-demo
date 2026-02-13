@@ -1,554 +1,82 @@
 #!/usr/bin/env python3
-"""Kria Camera Demo - Intel RealSense Camera Frame Capture and Visualization"""
+"""Kria Camera Demo - Entry point for RealSense Camera with DPU Inference."""
 
-import pyrealsense2 as rs
-import numpy as np
 import cv2
-from pynq_dpu import DpuOverlay
-import re
-import os
-import sys
 import time
-import subprocess
-import threading
+import argparse
 from pathlib import Path
 
-
-def check_and_elevate_privileges():
-    """Check if running as root and re-execute with sudo if needed.
-
-    PYNQ DPU overlay requires root permissions to access hardware MMIO registers.
-    """
-    if os.geteuid() != 0:
-        print("Root privileges required for PYNQ DPU hardware access.")
-        print("Re-executing with sudo...")
-
-        # Re-execute the script with sudo
-        args = ['sudo', '-E', sys.executable] + sys.argv
-        os.execvp('sudo', args)
+from camera_demo import (
+    check_and_elevate_privileges,
+    KriaCameraDemo,
+    get_contrasting_color,
+    draw_text_with_background,
+    load_model_metadata
+)
 
 
-def parse_prototxt(prototxt_path):
-    """Parse MobileNet V2 prototxt file to extract normalization parameters.
-
-    Args:
-        prototxt_path: Path to the .prototxt configuration file
+def parse_arguments():
+    """Parse command-line arguments.
 
     Returns:
-        dict: Dictionary containing 'mean' (list of 3 floats) and 'scale' (list of 3 floats)
+        argparse.Namespace: Parsed arguments
     """
-    with open(prototxt_path, 'r') as f:
-        content = f.read()
-
-    # Extract mean values (RGB order for Caffe)
-    mean_pattern = r'mean:\s*([\d.]+)'
-    mean_values = [float(m) for m in re.findall(mean_pattern, content)]
-
-    # Extract scale values
-    scale_pattern = r'scale:\s*([\d.]+)'
-    scale_values = [float(s) for s in re.findall(scale_pattern, content)]
-
-    if len(mean_values) != 3 or len(scale_values) != 3:
-        raise ValueError(f"Expected 3 mean and 3 scale values, got {len(mean_values)} means and {len(scale_values)} scales")
-
-    return {
-        'mean': mean_values,
-        'scale': scale_values
-    }
-
-
-class KriaCameraDemo:
-    """Main class for Kria camera demo with DPU inference."""
-
-    def __init__(self, prototxt_path, model_path, dpu_bit_path, labels_path,
-                 platform_stats_interval=2.0):
-        """Initialize the camera demo with DPU model and normalization parameters.
-
-        Args:
-            prototxt_path: Path to the prototxt file with normalization parameters
-            model_path: Path to the DPU xmodel file
-            dpu_bit_path: Path to the DPU bitstream file
-            labels_path: Path to the words.txt file with class labels
-            platform_stats_interval: Interval in seconds to update platform stats (default: 2.0)
-        """
-        # Load normalization parameters
-        print(f"Loading normalization parameters from {prototxt_path}...")
-        self.norm_params = parse_prototxt(prototxt_path)
-        print(f"Mean values (BGR): {self.norm_params['mean']}")
-        print(f"Scale values (BGR): {self.norm_params['scale']}")
-
-        # Load class labels
-        print(f"Loading class labels from {labels_path}...")
-        self.labels = KriaCameraDemo.load_labels(labels_path)
-        print(f"Loaded {len(self.labels)} class labels")
-
-        # Initialize RealSense pipeline
-        self.pipeline = rs.pipeline()
-        self.config = rs.config()
-
-        # Configure streams
-        self.config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        self.config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-
-        # Initialize DPU
-        print("Creating DPU overlay...")
-        self.overlay = DpuOverlay(dpu_bit_path)
-        self.overlay.load_model(model_path)
-
-        self.dpu = self.overlay.runner
-        inputTensors = self.dpu.get_input_tensors()
-        outputTensors = self.dpu.get_output_tensors()
-
-        self.shapeIn = tuple(inputTensors[0].dims)
-        self.shapeOut = tuple(outputTensors[0].dims)
-        self.outputSize = int(outputTensors[0].get_data_size() / self.shapeIn[0])
-
-        self.output_data = [np.empty(self.shapeOut, dtype=np.float32, order="C")]
-        self.input_data = [np.empty(self.shapeIn, dtype=np.float32, order="C")]
-
-        # Platform stats monitoring
-        self.platform_stats = {}
-        self.platform_stats_lock = threading.Lock()
-        self.platform_stats_interval = platform_stats_interval
-        self.platform_stats_thread = None
-        self.platform_stats_running = False
-
-    def start_camera(self):
-        """Start the RealSense camera pipeline."""
-        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        pipeline_profile = self.config.resolve(pipeline_wrapper)
-        device = pipeline_profile.get_device()
-
-        print(f"Device: {device.get_info(rs.camera_info.name)}")
-        print("Starting camera stream...")
-        self.pipeline.start(self.config)
-
-    def parse_platform_stats(self, output):
-        """Parse xmutil xlnx_platformstats output.
-
-        Args:
-            output: String output from xmutil xlnx_platformstats command
-
-        Returns:
-            dict: Dictionary containing parsed platform statistics
-        """
-        stats = {}
-        lines = output.strip().split('\n')
-
-        for line in lines:
-            line = line.strip()
-
-            # Parse SOM power metrics
-            if 'SOM total power' in line:
-                match = re.search(r':\s*(\d+)\s*mW', line)
-                if match:
-                    stats['power_mw'] = int(match.group(1))
-            elif 'SOM total current' in line:
-                match = re.search(r':\s*(\d+)\s*mA', line)
-                if match:
-                    stats['current_ma'] = int(match.group(1))
-            elif 'SOM total voltage' in line:
-                match = re.search(r':\s*(\d+)\s*mV', line)
-                if match:
-                    stats['voltage_mv'] = int(match.group(1))
-
-            # Parse CPU utilization
-            elif line.startswith('CPU') and '%' in line:
-                match = re.search(r'CPU(\d+)\s*:\s*([\d.]+)%', line)
-                if match:
-                    cpu_num = int(match.group(1))
-                    cpu_util = float(match.group(2))
-                    stats[f'cpu{cpu_num}_util'] = cpu_util
-
-            # Parse temperatures
-            elif 'LPD temperature' in line:
-                match = re.search(r':\s*(\d+)\s*C', line)
-                if match:
-                    stats['lpd_temp_c'] = int(match.group(1))
-            elif 'FPD temperature' in line:
-                match = re.search(r':\s*(\d+)\s*C', line)
-                if match:
-                    stats['fpd_temp_c'] = int(match.group(1))
-            elif 'PL temperature' in line:
-                match = re.search(r':\s*(\d+)\s*C', line)
-                if match:
-                    stats['pl_temp_c'] = int(match.group(1))
-
-            # Parse memory utilization
-            elif line.startswith('MemTotal'):
-                match = re.search(r':\s*(\d+)\s*kB', line)
-                if match:
-                    stats['mem_total_kb'] = int(match.group(1))
-            elif line.startswith('MemAvailable'):
-                match = re.search(r':\s*(\d+)\s*kB', line)
-                if match:
-                    stats['mem_available_kb'] = int(match.group(1))
-
-        return stats
-
-    def update_platform_stats(self):
-        """Fetch and update platform statistics by calling xmutil xlnx_platformstats."""
-        try:
-            result = subprocess.run(
-                ['sudo', 'xmutil', 'xlnx_platformstats'],
-                capture_output=True,
-                text=True,
-                timeout=5.0
-            )
-
-            if result.returncode == 0:
-                stats = self.parse_platform_stats(result.stdout)
-                with self.platform_stats_lock:
-                    self.platform_stats = stats
-            else:
-                print(f"Error running xmutil: {result.stderr}")
-
-        except subprocess.TimeoutExpired:
-            print("xmutil command timed out")
-        except Exception as e:
-            print(f"Error updating platform stats: {e}")
-
-    def platform_stats_monitor_loop(self):
-        """Background thread loop to periodically update platform stats."""
-        print(f"Starting platform stats monitor (interval: {self.platform_stats_interval}s)")
-        while self.platform_stats_running:
-            self.update_platform_stats()
-            time.sleep(self.platform_stats_interval)
-
-    def start_platform_stats_monitor(self):
-        """Start the platform stats monitoring thread."""
-        if not self.platform_stats_running:
-            self.platform_stats_running = True
-            self.platform_stats_thread = threading.Thread(
-                target=self.platform_stats_monitor_loop,
-                daemon=True
-            )
-            self.platform_stats_thread.start()
-
-    def stop_platform_stats_monitor(self):
-        """Stop the platform stats monitoring thread."""
-        if self.platform_stats_running:
-            self.platform_stats_running = False
-            if self.platform_stats_thread:
-                self.platform_stats_thread.join(timeout=2.0)
-
-    def get_platform_stats(self):
-        """Get current platform stats in a thread-safe manner.
-
-        Returns:
-            dict: Copy of current platform statistics
-        """
-        with self.platform_stats_lock:
-            return self.platform_stats.copy()
-
-    def get_frames(self):
-        """Get depth and color frames from the camera.
-
-        Returns:
-            tuple: (depth_image, color_image) as numpy arrays, or (None, None) if frames not available
-        """
-        frames = self.pipeline.wait_for_frames()
-        depth_frame = frames.get_depth_frame()
-        color_frame = frames.get_color_frame()
-
-        if not depth_frame or not color_frame:
-            return None, None
-
-        depth_image = np.asanyarray(depth_frame.get_data())
-        color_image = np.asanyarray(color_frame.get_data())
-
-        return depth_image, color_image
-
-    @staticmethod
-    def load_labels(labels_path):
-        """Load ImageNet class labels from words.txt file.
-
-        Args:
-            labels_path: Path to the words.txt file containing class labels
-
-        Returns:
-            list: List of label strings, indexed by class ID
-        """
-        labels = []
-        with open(labels_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line:  # Skip empty lines
-                    labels.append(line)
-        return labels
-
-    @staticmethod
-    def predict_label(softmax, top_k=5):
-        """Get top-k predictions from softmax output.
-
-        Args:
-            softmax: Softmax probability array
-            top_k: Number of top predictions to return
-
-        Returns:
-            list: List of tuples (class_index, confidence) sorted by confidence descending
-        """
-        # Get top-k indices sorted by confidence (descending)
-        top_indices = np.argsort(softmax)[-top_k:][::-1]
-
-        # Get corresponding confidence values
-        top_confidences = softmax[top_indices]
-
-        # Return list of (index, confidence) tuples
-        return [(int(idx), float(conf)) for idx, conf in zip(top_indices, top_confidences)]
-
-    @staticmethod
-    def calculate_softmax(data):
-        """Calculate softmax probabilities from logits.
-
-        Args:
-            data: Raw logits from model output
-
-        Returns:
-            numpy.ndarray: Normalized softmax probabilities (sum to 1.0)
-        """
-        # Subtract max for numerical stability
-        exp_data = np.exp(data - np.max(data))
-        return exp_data / np.sum(exp_data)
-
-    def make_prediction(self, color_image):
-        """Run inference on the input image using DPU.
-
-        Args:
-            color_image: Input color image
-
-        Returns:
-            tuple: (predictions, inference_time) where predictions is a list of
-                   tuples (class_index, confidence) and inference_time is in seconds
-        """
-        # Apply normalization to color image
-        normalized_image = KriaCameraDemo.preprocess_fn(
-            color_image,
-            self.norm_params['mean'],
-            self.norm_params['scale']
-        )
-
-        image = self.input_data[0]
-        image[0,...] = normalized_image.reshape(self.shapeIn[1:])
-
-        # Measure DPU execution time
-        start_time = time.perf_counter()
-        job_id = self.dpu.execute_async(self.input_data, self.output_data)
-        self.dpu.wait(job_id)
-        end_time = time.perf_counter()
-        inference_time = end_time - start_time
-
-        temp = [j.reshape(1, self.outputSize) for j in self.output_data]
-        softmax = KriaCameraDemo.calculate_softmax(temp[0][0])
-
-        predictions = KriaCameraDemo.predict_label(softmax, top_k=5)
-        return predictions, inference_time
-
-    @staticmethod
-    def resize_shortest_edge(image, size):
-        H, W = image.shape[:2]
-        if H >= W:
-            nW = size
-            nH = int(float(H)/W * size)
-        else:
-            nH = size
-            nW = int(float(W)/H * size)
-        return cv2.resize(image,(nW,nH))
-
-    @staticmethod
-    def central_crop(image, crop_height, crop_width):
-        image_height = image.shape[0]
-        image_width = image.shape[1]
-        offset_height = (image_height - crop_height) // 2
-        offset_width = (image_width - crop_width) // 2
-        return image[offset_height:offset_height + crop_height, offset_width:
-                    offset_width + crop_width, :]
-
-    @staticmethod
-    def preprocess_fn(image, means, scales, crop_height = 224, crop_width = 224):
-        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = KriaCameraDemo.resize_shortest_edge(image, 256)
-        image = KriaCameraDemo.normalize_image(image, means, scales)
-        image = KriaCameraDemo.central_crop(image, crop_height, crop_width)
-        return image
-
-    @staticmethod
-    def normalize_image(image, mean, scale):
-        """Normalize image using mean subtraction and scaling.
-
-        Args:
-            image: Input image as numpy array (BGR format)
-            mean: List of 3 mean values for BGR channels
-            scale: List of 3 scale values for BGR channels
-
-        Returns:
-            numpy.ndarray: Normalized image (float32)
-        """
-        # Convert to float32 for normalization
-        normalized = image.astype(np.float32)
-
-        # Apply mean subtraction and scaling per channel (BGR order)
-        for i in range(3):
-            normalized[:, :, i] = (normalized[:, :, i] - mean[i]) * scale[i]
-
-        return normalized
-
-    def predict(self, color_image):
-        """Run inference on the color image.
-
-        Args:
-            color_image: Input color image (BGR format)
-
-        Returns:
-            tuple: (predictions, inference_time) where predictions is a list of
-                   tuples (class_index, confidence) and inference_time is in seconds
-        """
-        return self.make_prediction(color_image)
-
-    def get_label_text(self, label_index):
-        """Get the text label for a given class index.
-
-        Args:
-            label_index: Integer class index (0-999)
-
-        Returns:
-            str: Text label or "Unknown" if index is out of range
-        """
-        if 0 <= label_index < len(self.labels):
-            return self.labels[label_index]
-        return f"Unknown (index {label_index})"
-
-    @staticmethod
-    def calculate_luminance(bgr_color):
-        """Calculate relative luminance of a BGR color using ITU-R BT.709 standard.
-
-        Args:
-            bgr_color: Tuple or array of (B, G, R) values in range [0, 255]
-
-        Returns:
-            float: Relative luminance in range [0, 255]
-        """
-        # ITU-R BT.709 coefficients for RGB (convert from BGR)
-        b, g, r = bgr_color[0], bgr_color[1], bgr_color[2]
-        # Weighted sum: 0.2126*R + 0.7152*G + 0.0722*B
-        return 0.0722 * b + 0.7152 * g + 0.2126 * r
-
-    @staticmethod
-    def get_contrasting_color(image, x, y, width, height):
-        """Determine optimal text color (white or black) based on background luminance.
-
-        Args:
-            image: Input BGR image
-            x, y: Top-left corner of text region
-            width, height: Dimensions of text region
-
-        Returns:
-            tuple: BGR color tuple (255, 255, 255) for white or (0, 0, 0) for black
-        """
-        img_h, img_w = image.shape[:2]
-
-        # Clamp coordinates to image bounds
-        x1 = max(0, x)
-        y1 = max(0, y)
-        x2 = min(img_w, x + width)
-        y2 = min(img_h, y + height)
-
-        # Extract region of interest
-        roi = image[y1:y2, x1:x2]
-
-        if roi.size == 0:
-            # Default to white if region is invalid
-            return (255, 255, 255)
-
-        # Calculate mean color of the region
-        mean_color = cv2.mean(roi)[:3]  # Get BGR values only
-
-        # Calculate luminance
-        luminance = KriaCameraDemo.calculate_luminance(mean_color)
-
-        # Use white text on dark background, black text on light background
-        # Threshold at 128 (middle of 0-255 range)
-        return (255, 255, 255) if luminance < 128 else (0, 0, 0)
-
-    @staticmethod
-    def draw_text_with_background(image, text, position, font, font_scale,
-                                  text_color, thickness, bg_opacity=0.6):
-        """Draw text with a semi-transparent background for improved readability.
-
-        Args:
-            image: Image to draw on
-            text: Text string to draw
-            position: (x, y) position for text
-            font: OpenCV font type
-            font_scale: Font scale factor
-            text_color: BGR color tuple for text
-            thickness: Text thickness
-            bg_opacity: Background opacity (0=transparent, 1=opaque)
-
-        Returns:
-            numpy.ndarray: Image with text drawn
-        """
-        # Get text size
-        (text_width, text_height), baseline = cv2.getTextSize(
-            text, font, font_scale, thickness
-        )
-
-        x, y = position
-        padding = 5
-
-        # Define background rectangle
-        bg_x1 = x - padding
-        bg_y1 = y - text_height - padding
-        bg_x2 = x + text_width + padding
-        bg_y2 = y + baseline + padding
-
-        # Create semi-transparent background
-        overlay = image.copy()
-
-        # Use inverse of text color for background (with some adjustment)
-        bg_color = tuple(255 - c for c in text_color)
-
-        cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), bg_color, -1)
-
-        # Blend overlay with original image
-        cv2.addWeighted(overlay, bg_opacity, image, 1 - bg_opacity, 0, image)
-
-        # Draw text on top
-        cv2.putText(image, text, position, font, font_scale, text_color, thickness)
-
-        return image
-
-    def cleanup(self):
-        """Release all resources."""
-        # Stop platform stats monitoring
-        self.stop_platform_stats_monitor()
-
-        self.pipeline.stop()
-        cv2.destroyAllWindows()
-        print("Camera stream stopped")
-
-        if self.dpu:
-            del self.dpu
-
-        self.overlay.free()
-        print("DPU overlay resources released")
+    parser = argparse.ArgumentParser(
+        description="Kria Camera Demo - RealSense camera with DPU inference",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument(
+        "-m", "--model-dir",
+        type=str,
+        default="models/mobilenet_v2",
+        help="Path to the model directory containing meta.json"
+    )
+
+    parser.add_argument(
+        "-b", "--dpu-bit",
+        type=str,
+        default="dpu.bit",
+        help="Path to the DPU bitstream file"
+    )
+
+    parser.add_argument(
+        "-l", "--labels",
+        type=str,
+        default="words.txt",
+        help="Path to the class labels file"
+    )
+
+    return parser.parse_args()
 
 
 def main():
+    """Main application loop."""
+    # Parse command-line arguments
+    args = parse_arguments()
+
     # Check for root privileges and elevate if needed
     check_and_elevate_privileges()
 
+    # Load model metadata from meta.json
+    print(f"Loading model metadata from {args.model_dir}/meta.json...")
+    model_info = load_model_metadata(args.model_dir)
+
+    print(f"Model file: {model_info['model_path']}")
+    print(f"Prototxt file: {model_info['prototxt_path']}")
+    print(f"Target: {model_info['metadata'].get('target', 'Unknown')}")
+
     # Initialize the camera demo
     demo = KriaCameraDemo(
-        prototxt_path=Path("models/mobilenet_v2/mobilenet_v2.prototxt"),
-        model_path="./models/mobilenet_v2/mobilenet_v2.xmodel",
-        dpu_bit_path="dpu.bit",
-        labels_path="words.txt"
+        prototxt_path=model_info['prototxt_path'],
+        model_path=model_info['model_path'],
+        dpu_bit_path=args.dpu_bit,
+        labels_path=args.labels
     )
 
     try:
         demo.start_camera()
-        demo.start_platform_stats_monitor()
+        demo.start_platform_monitor()
 
         print("Press 'q' to quit")
 
@@ -584,7 +112,7 @@ def main():
             display_image = color_image.copy()
 
             # Display actual FPS and DPU inference time at the top
-            perf_text = f"FPS: {actual_fps:.1f} | DPU: {inference_time*1000:.1f}ms ({dpu_fps:.1f} FPS)"
+            perf_text = f"Display FPS: {actual_fps:.1f} | DPU Delay: {inference_time*1000:.1f}ms ({dpu_fps:.1f} FPS)"
             perf_font = cv2.FONT_HERSHEY_SIMPLEX
             perf_scale = 0.6
             perf_thickness = 2
@@ -596,13 +124,13 @@ def main():
             )
 
             # Determine contrasting color based on background
-            perf_color = KriaCameraDemo.get_contrasting_color(
+            perf_color = get_contrasting_color(
                 display_image, perf_pos[0], perf_pos[1] - perf_height,
                 perf_width, perf_height
             )
 
             # Draw performance text with semi-transparent background
-            demo.draw_text_with_background(
+            draw_text_with_background(
                 display_image, perf_text, perf_pos, perf_font,
                 perf_scale, perf_color, perf_thickness, bg_opacity=0.5
             )
@@ -621,13 +149,13 @@ def main():
             )
 
             # Determine contrasting color based on background
-            header_color = KriaCameraDemo.get_contrasting_color(
+            header_color = get_contrasting_color(
                 display_image, header_pos[0], header_pos[1] - header_height,
                 header_width, header_height
             )
 
             # Draw section header with semi-transparent background
-            demo.draw_text_with_background(
+            draw_text_with_background(
                 display_image, header_text, header_pos, header_font,
                 header_scale, header_color, header_thickness, bg_opacity=0.5
             )
@@ -650,13 +178,13 @@ def main():
                 )
 
                 # Determine contrasting color based on background
-                text_color = KriaCameraDemo.get_contrasting_color(
+                text_color = get_contrasting_color(
                     display_image, pred_pos[0], pred_pos[1] - text_height,
                     text_width, text_height
                 )
 
                 # Draw prediction text with semi-transparent background
-                demo.draw_text_with_background(
+                draw_text_with_background(
                     display_image, text, pred_pos, pred_font,
                     pred_scale, text_color, pred_thickness, bg_opacity=0.5
                 )
@@ -681,13 +209,13 @@ def main():
                 )
 
                 # Determine contrasting color based on background
-                header_color = KriaCameraDemo.get_contrasting_color(
+                header_color = get_contrasting_color(
                     display_image, header_pos[0], header_pos[1] - header_height,
                     header_width, header_height
                 )
 
                 # Draw section header with semi-transparent background
-                demo.draw_text_with_background(
+                draw_text_with_background(
                     display_image, header_text, header_pos, header_font,
                     header_scale, header_color, header_thickness, bg_opacity=0.5
                 )
@@ -745,23 +273,47 @@ def main():
                     )
 
                     # Determine contrasting color based on background
-                    text_color = KriaCameraDemo.get_contrasting_color(
+                    text_color = get_contrasting_color(
                         display_image, stats_pos[0], stats_pos[1] - text_height,
                         text_width, text_height
                     )
 
                     # Draw stats text with semi-transparent background
-                    demo.draw_text_with_background(
+                    draw_text_with_background(
                         display_image, stats_text, stats_pos, stats_font,
                         stats_scale, text_color, stats_thickness, bg_opacity=0.5
                     )
 
                     y_offset += 20
 
-            images = display_image
+            # Add "Press 'q' to exit" notification at the bottom of the frame
+            img_height = display_image.shape[0]
+            exit_text = "Press 'q' to exit"
+            exit_font = cv2.FONT_HERSHEY_SIMPLEX
+            exit_scale = 0.6
+            exit_thickness = 2
 
-            # Show images
-            cv2.imshow('RealSense - Color', images)
+            # Get text size to position at bottom-right
+            (exit_width, exit_height), _ = cv2.getTextSize(
+                exit_text, exit_font, exit_scale, exit_thickness
+            )
+
+            exit_pos = (display_image.shape[1] - exit_width - 10, img_height - 10)
+
+            # Determine contrasting color based on background
+            exit_color = get_contrasting_color(
+                display_image, exit_pos[0], exit_pos[1] - exit_height,
+                exit_width, exit_height
+            )
+
+            # Draw exit instruction with semi-transparent background
+            draw_text_with_background(
+                display_image, exit_text, exit_pos, exit_font,
+                exit_scale, exit_color, exit_thickness, bg_opacity=0.5
+            )
+
+            # Show image
+            cv2.imshow('RealSense - Color', display_image)
 
             # Break loop with 'q' key
             if cv2.waitKey(1) & 0xFF == ord('q'):
