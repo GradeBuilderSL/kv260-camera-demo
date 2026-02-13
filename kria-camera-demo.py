@@ -289,6 +289,106 @@ class KriaCameraDemo:
             return self.labels[label_index]
         return f"Unknown (index {label_index})"
 
+    @staticmethod
+    def calculate_luminance(bgr_color):
+        """Calculate relative luminance of a BGR color using ITU-R BT.709 standard.
+
+        Args:
+            bgr_color: Tuple or array of (B, G, R) values in range [0, 255]
+
+        Returns:
+            float: Relative luminance in range [0, 255]
+        """
+        # ITU-R BT.709 coefficients for RGB (convert from BGR)
+        b, g, r = bgr_color[0], bgr_color[1], bgr_color[2]
+        # Weighted sum: 0.2126*R + 0.7152*G + 0.0722*B
+        return 0.0722 * b + 0.7152 * g + 0.2126 * r
+
+    @staticmethod
+    def get_contrasting_color(image, x, y, width, height):
+        """Determine optimal text color (white or black) based on background luminance.
+
+        Args:
+            image: Input BGR image
+            x, y: Top-left corner of text region
+            width, height: Dimensions of text region
+
+        Returns:
+            tuple: BGR color tuple (255, 255, 255) for white or (0, 0, 0) for black
+        """
+        img_h, img_w = image.shape[:2]
+
+        # Clamp coordinates to image bounds
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(img_w, x + width)
+        y2 = min(img_h, y + height)
+
+        # Extract region of interest
+        roi = image[y1:y2, x1:x2]
+
+        if roi.size == 0:
+            # Default to white if region is invalid
+            return (255, 255, 255)
+
+        # Calculate mean color of the region
+        mean_color = cv2.mean(roi)[:3]  # Get BGR values only
+
+        # Calculate luminance
+        luminance = KriaCameraDemo.calculate_luminance(mean_color)
+
+        # Use white text on dark background, black text on light background
+        # Threshold at 128 (middle of 0-255 range)
+        return (255, 255, 255) if luminance < 128 else (0, 0, 0)
+
+    @staticmethod
+    def draw_text_with_background(image, text, position, font, font_scale,
+                                  text_color, thickness, bg_opacity=0.6):
+        """Draw text with a semi-transparent background for improved readability.
+
+        Args:
+            image: Image to draw on
+            text: Text string to draw
+            position: (x, y) position for text
+            font: OpenCV font type
+            font_scale: Font scale factor
+            text_color: BGR color tuple for text
+            thickness: Text thickness
+            bg_opacity: Background opacity (0=transparent, 1=opaque)
+
+        Returns:
+            numpy.ndarray: Image with text drawn
+        """
+        # Get text size
+        (text_width, text_height), baseline = cv2.getTextSize(
+            text, font, font_scale, thickness
+        )
+
+        x, y = position
+        padding = 5
+
+        # Define background rectangle
+        bg_x1 = x - padding
+        bg_y1 = y - text_height - padding
+        bg_x2 = x + text_width + padding
+        bg_y2 = y + baseline + padding
+
+        # Create semi-transparent background
+        overlay = image.copy()
+
+        # Use inverse of text color for background (with some adjustment)
+        bg_color = tuple(255 - c for c in text_color)
+
+        cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), bg_color, -1)
+
+        # Blend overlay with original image
+        cv2.addWeighted(overlay, bg_opacity, image, 1 - bg_opacity, 0, image)
+
+        # Draw text on top
+        cv2.putText(image, text, position, font, font_scale, text_color, thickness)
+
+        return image
+
     def cleanup(self):
         """Release all resources."""
         self.pipeline.stop()
@@ -342,24 +442,63 @@ def main():
 
             # Display inference time and FPS at the top
             perf_text = f"DPU: {inference_time*1000:.1f}ms ({fps:.1f} FPS)"
-            cv2.putText(display_image, perf_text, (10, 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            perf_font = cv2.FONT_HERSHEY_SIMPLEX
+            perf_scale = 0.6
+            perf_thickness = 2
+            perf_pos = (10, 20)
+
+            # Get text size for contrast calculation
+            (perf_width, perf_height), _ = cv2.getTextSize(
+                perf_text, perf_font, perf_scale, perf_thickness
+            )
+
+            # Determine contrasting color based on background
+            perf_color = KriaCameraDemo.get_contrasting_color(
+                display_image, perf_pos[0], perf_pos[1] - perf_height,
+                perf_width, perf_height
+            )
+
+            # Draw performance text with semi-transparent background
+            demo.draw_text_with_background(
+                display_image, perf_text, perf_pos, perf_font,
+                perf_scale, perf_color, perf_thickness, bg_opacity=0.5
+            )
 
             # Display top-5 predictions
             y_offset = 50
+            pred_font = cv2.FONT_HERSHEY_SIMPLEX
+            pred_scale = 0.5
+            pred_thickness = 1
+
             for i, (label_idx, confidence) in enumerate(predictions, 1):
                 label_text = demo.get_label_text(label_idx)
                 # Format: "1. [152] 95.2% - Chihuahua"
                 text = f"{i}. [{label_idx}] {confidence:.1%} - {label_text[:30]}"
-                cv2.putText(display_image, text, (10, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                pred_pos = (10, y_offset)
+
+                # Get text size for contrast calculation
+                (text_width, text_height), _ = cv2.getTextSize(
+                    text, pred_font, pred_scale, pred_thickness
+                )
+
+                # Determine contrasting color based on background
+                text_color = KriaCameraDemo.get_contrasting_color(
+                    display_image, pred_pos[0], pred_pos[1] - text_height,
+                    text_width, text_height
+                )
+
+                # Draw prediction text with semi-transparent background
+                demo.draw_text_with_background(
+                    display_image, text, pred_pos, pred_font,
+                    pred_scale, text_color, pred_thickness, bg_opacity=0.5
+                )
+
                 y_offset += 25
 
-            # Stack images horizontally: color | depth
-            images = np.hstack((display_image, depth_colormap))
+            images = display_image
 
             # Show images
-            cv2.imshow('RealSense - Color | Depth', images)
+            cv2.imshow('RealSense - Color', images)
 
             # Break loop with 'q' key
             if cv2.waitKey(1) & 0xFF == ord('q'):
