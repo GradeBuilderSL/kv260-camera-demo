@@ -9,6 +9,8 @@ import re
 import os
 import sys
 import time
+import subprocess
+import threading
 from pathlib import Path
 
 
@@ -58,7 +60,8 @@ def parse_prototxt(prototxt_path):
 class KriaCameraDemo:
     """Main class for Kria camera demo with DPU inference."""
 
-    def __init__(self, prototxt_path, model_path, dpu_bit_path, labels_path):
+    def __init__(self, prototxt_path, model_path, dpu_bit_path, labels_path,
+                 platform_stats_interval=2.0):
         """Initialize the camera demo with DPU model and normalization parameters.
 
         Args:
@@ -66,6 +69,7 @@ class KriaCameraDemo:
             model_path: Path to the DPU xmodel file
             dpu_bit_path: Path to the DPU bitstream file
             labels_path: Path to the words.txt file with class labels
+            platform_stats_interval: Interval in seconds to update platform stats (default: 2.0)
         """
         # Load normalization parameters
         print(f"Loading normalization parameters from {prototxt_path}...")
@@ -102,6 +106,13 @@ class KriaCameraDemo:
         self.output_data = [np.empty(self.shapeOut, dtype=np.float32, order="C")]
         self.input_data = [np.empty(self.shapeIn, dtype=np.float32, order="C")]
 
+        # Platform stats monitoring
+        self.platform_stats = {}
+        self.platform_stats_lock = threading.Lock()
+        self.platform_stats_interval = platform_stats_interval
+        self.platform_stats_thread = None
+        self.platform_stats_running = False
+
     def start_camera(self):
         """Start the RealSense camera pipeline."""
         pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
@@ -111,6 +122,124 @@ class KriaCameraDemo:
         print(f"Device: {device.get_info(rs.camera_info.name)}")
         print("Starting camera stream...")
         self.pipeline.start(self.config)
+
+    def parse_platform_stats(self, output):
+        """Parse xmutil xlnx_platformstats output.
+
+        Args:
+            output: String output from xmutil xlnx_platformstats command
+
+        Returns:
+            dict: Dictionary containing parsed platform statistics
+        """
+        stats = {}
+        lines = output.strip().split('\n')
+
+        for line in lines:
+            line = line.strip()
+
+            # Parse SOM power metrics
+            if 'SOM total power' in line:
+                match = re.search(r':\s*(\d+)\s*mW', line)
+                if match:
+                    stats['power_mw'] = int(match.group(1))
+            elif 'SOM total current' in line:
+                match = re.search(r':\s*(\d+)\s*mA', line)
+                if match:
+                    stats['current_ma'] = int(match.group(1))
+            elif 'SOM total voltage' in line:
+                match = re.search(r':\s*(\d+)\s*mV', line)
+                if match:
+                    stats['voltage_mv'] = int(match.group(1))
+
+            # Parse CPU utilization
+            elif line.startswith('CPU') and '%' in line:
+                match = re.search(r'CPU(\d+)\s*:\s*([\d.]+)%', line)
+                if match:
+                    cpu_num = int(match.group(1))
+                    cpu_util = float(match.group(2))
+                    stats[f'cpu{cpu_num}_util'] = cpu_util
+
+            # Parse temperatures
+            elif 'LPD temperature' in line:
+                match = re.search(r':\s*(\d+)\s*C', line)
+                if match:
+                    stats['lpd_temp_c'] = int(match.group(1))
+            elif 'FPD temperature' in line:
+                match = re.search(r':\s*(\d+)\s*C', line)
+                if match:
+                    stats['fpd_temp_c'] = int(match.group(1))
+            elif 'PL temperature' in line:
+                match = re.search(r':\s*(\d+)\s*C', line)
+                if match:
+                    stats['pl_temp_c'] = int(match.group(1))
+
+            # Parse memory utilization
+            elif line.startswith('MemTotal'):
+                match = re.search(r':\s*(\d+)\s*kB', line)
+                if match:
+                    stats['mem_total_kb'] = int(match.group(1))
+            elif line.startswith('MemAvailable'):
+                match = re.search(r':\s*(\d+)\s*kB', line)
+                if match:
+                    stats['mem_available_kb'] = int(match.group(1))
+
+        return stats
+
+    def update_platform_stats(self):
+        """Fetch and update platform statistics by calling xmutil xlnx_platformstats."""
+        try:
+            result = subprocess.run(
+                ['sudo', 'xmutil', 'xlnx_platformstats'],
+                capture_output=True,
+                text=True,
+                timeout=5.0
+            )
+
+            if result.returncode == 0:
+                stats = self.parse_platform_stats(result.stdout)
+                with self.platform_stats_lock:
+                    self.platform_stats = stats
+            else:
+                print(f"Error running xmutil: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            print("xmutil command timed out")
+        except Exception as e:
+            print(f"Error updating platform stats: {e}")
+
+    def platform_stats_monitor_loop(self):
+        """Background thread loop to periodically update platform stats."""
+        print(f"Starting platform stats monitor (interval: {self.platform_stats_interval}s)")
+        while self.platform_stats_running:
+            self.update_platform_stats()
+            time.sleep(self.platform_stats_interval)
+
+    def start_platform_stats_monitor(self):
+        """Start the platform stats monitoring thread."""
+        if not self.platform_stats_running:
+            self.platform_stats_running = True
+            self.platform_stats_thread = threading.Thread(
+                target=self.platform_stats_monitor_loop,
+                daemon=True
+            )
+            self.platform_stats_thread.start()
+
+    def stop_platform_stats_monitor(self):
+        """Stop the platform stats monitoring thread."""
+        if self.platform_stats_running:
+            self.platform_stats_running = False
+            if self.platform_stats_thread:
+                self.platform_stats_thread.join(timeout=2.0)
+
+    def get_platform_stats(self):
+        """Get current platform stats in a thread-safe manner.
+
+        Returns:
+            dict: Copy of current platform statistics
+        """
+        with self.platform_stats_lock:
+            return self.platform_stats.copy()
 
     def get_frames(self):
         """Get depth and color frames from the camera.
@@ -391,6 +520,9 @@ class KriaCameraDemo:
 
     def cleanup(self):
         """Release all resources."""
+        # Stop platform stats monitoring
+        self.stop_platform_stats_monitor()
+
         self.pipeline.stop()
         cv2.destroyAllWindows()
         print("Camera stream stopped")
@@ -416,8 +548,13 @@ def main():
 
     try:
         demo.start_camera()
+        demo.start_platform_stats_monitor()
 
         print("Press 'q' to quit")
+
+        # Variables for FPS calculation
+        prev_frame_time = time.perf_counter()
+
         while True:
             # Get frames from camera
             depth_image, color_image = demo.get_frames()
@@ -425,11 +562,17 @@ def main():
             if depth_image is None or color_image is None:
                 continue
 
+            # Calculate actual FPS
+            current_frame_time = time.perf_counter()
+            frame_delta = current_frame_time - prev_frame_time
+            actual_fps = 1.0 / frame_delta if frame_delta > 0 else 0
+            prev_frame_time = current_frame_time
+
             # Run prediction - returns top-5 predictions and inference time
             predictions, inference_time = demo.predict(color_image)
 
-            # Calculate FPS from inference time
-            fps = 1.0 / inference_time if inference_time > 0 else 0
+            # Calculate DPU inference FPS
+            dpu_fps = 1.0 / inference_time if inference_time > 0 else 0
 
             # Apply colormap on depth image
             depth_colormap = cv2.applyColorMap(
@@ -440,8 +583,8 @@ def main():
             # Add performance info and top-5 predictions to color image
             display_image = color_image.copy()
 
-            # Display inference time and FPS at the top
-            perf_text = f"DPU: {inference_time*1000:.1f}ms ({fps:.1f} FPS)"
+            # Display actual FPS and DPU inference time at the top
+            perf_text = f"FPS: {actual_fps:.1f} | DPU: {inference_time*1000:.1f}ms ({dpu_fps:.1f} FPS)"
             perf_font = cv2.FONT_HERSHEY_SIMPLEX
             perf_scale = 0.6
             perf_thickness = 2
@@ -464,8 +607,33 @@ def main():
                 perf_scale, perf_color, perf_thickness, bg_opacity=0.5
             )
 
-            # Display top-5 predictions
+            # Display "Classification" section header
             y_offset = 50
+            header_font = cv2.FONT_HERSHEY_SIMPLEX
+            header_scale = 0.6
+            header_thickness = 2
+            header_text = "Classification"
+            header_pos = (10, y_offset)
+
+            # Get text size for contrast calculation
+            (header_width, header_height), _ = cv2.getTextSize(
+                header_text, header_font, header_scale, header_thickness
+            )
+
+            # Determine contrasting color based on background
+            header_color = KriaCameraDemo.get_contrasting_color(
+                display_image, header_pos[0], header_pos[1] - header_height,
+                header_width, header_height
+            )
+
+            # Draw section header with semi-transparent background
+            demo.draw_text_with_background(
+                display_image, header_text, header_pos, header_font,
+                header_scale, header_color, header_thickness, bg_opacity=0.5
+            )
+
+            # Display top-5 predictions
+            y_offset += 30
             pred_font = cv2.FONT_HERSHEY_SIMPLEX
             pred_scale = 0.5
             pred_thickness = 1
@@ -494,6 +662,101 @@ def main():
                 )
 
                 y_offset += 25
+
+            # Display platform stats
+            platform_stats = demo.get_platform_stats()
+            if platform_stats:
+                y_offset += 10  # Add some spacing
+
+                # Display "System Info" section header
+                header_font = cv2.FONT_HERSHEY_SIMPLEX
+                header_scale = 0.6
+                header_thickness = 2
+                header_text = "System Info"
+                header_pos = (10, y_offset)
+
+                # Get text size for contrast calculation
+                (header_width, header_height), _ = cv2.getTextSize(
+                    header_text, header_font, header_scale, header_thickness
+                )
+
+                # Determine contrasting color based on background
+                header_color = KriaCameraDemo.get_contrasting_color(
+                    display_image, header_pos[0], header_pos[1] - header_height,
+                    header_width, header_height
+                )
+
+                # Draw section header with semi-transparent background
+                demo.draw_text_with_background(
+                    display_image, header_text, header_pos, header_font,
+                    header_scale, header_color, header_thickness, bg_opacity=0.5
+                )
+
+                y_offset += 25
+                stats_font = cv2.FONT_HERSHEY_SIMPLEX
+                stats_scale = 0.5
+                stats_thickness = 1
+
+                # Prepare stats text lines
+                stats_lines = []
+
+                # Power metrics
+                if 'power_mw' in platform_stats:
+                    stats_lines.append(f"Power: {platform_stats['power_mw']} mW")
+                if 'current_ma' in platform_stats:
+                    stats_lines.append(f"Current: {platform_stats['current_ma']} mA")
+                if 'voltage_mv' in platform_stats:
+                    stats_lines.append(f"Voltage: {platform_stats['voltage_mv']} mV")
+
+                # Temperature metrics
+                temps = []
+                if 'lpd_temp_c' in platform_stats:
+                    temps.append(f"LPD:{platform_stats['lpd_temp_c']}C")
+                if 'fpd_temp_c' in platform_stats:
+                    temps.append(f"FPD:{platform_stats['fpd_temp_c']}C")
+                if 'pl_temp_c' in platform_stats:
+                    temps.append(f"PL:{platform_stats['pl_temp_c']}C")
+                if temps:
+                    stats_lines.append(f"Temp: {' '.join(temps)}")
+
+                # CPU utilization
+                cpu_utils = []
+                for i in range(4):
+                    key = f'cpu{i}_util'
+                    if key in platform_stats:
+                        cpu_utils.append(f"{platform_stats[key]:.1f}%")
+                if cpu_utils:
+                    stats_lines.append(f"CPU: {' '.join(cpu_utils)}")
+
+                # Memory utilization
+                if 'mem_total_kb' in platform_stats and 'mem_available_kb' in platform_stats:
+                    mem_used_mb = (platform_stats['mem_total_kb'] - platform_stats['mem_available_kb']) / 1024
+                    mem_total_mb = platform_stats['mem_total_kb'] / 1024
+                    mem_percent = (mem_used_mb / mem_total_mb) * 100 if mem_total_mb > 0 else 0
+                    stats_lines.append(f"RAM: {mem_used_mb:.0f}/{mem_total_mb:.0f} MB ({mem_percent:.1f}%)")
+
+                # Draw each stats line
+                for stats_text in stats_lines:
+                    stats_pos = (10, y_offset)
+
+                    # Get text size for contrast calculation
+                    (text_width, text_height), _ = cv2.getTextSize(
+                        stats_text, stats_font, stats_scale, stats_thickness
+                    )
+
+                    # Determine contrasting color based on background
+                    text_color = KriaCameraDemo.get_contrasting_color(
+                        display_image, stats_pos[0], stats_pos[1] - text_height,
+                        text_width, text_height
+                    )
+
+                    # Draw stats text with semi-transparent background
+                    demo.draw_text_with_background(
+                        display_image, stats_text, stats_pos, stats_font,
+                        stats_scale, text_color, stats_thickness, bg_opacity=0.5
+                    )
+
+                    y_offset += 20
 
             images = display_image
 
