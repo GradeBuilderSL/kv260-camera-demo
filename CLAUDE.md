@@ -4,87 +4,296 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python application for demonstrating Intel RealSense camera capabilities on AMD Xilinx Kria hardware. The project uses a remote deployment workflow where development happens locally but execution occurs on the Kria board at `192.168.100.8`.
+This repository contains two main applications for AMD Xilinx Kria hardware:
+1. **Camera Demo** - Real-time RealSense camera with DPU inference and visualization
+2. **Synthetic Benchmark** - DPU performance profiling using random data (no camera required)
 
-## Development Workflow
+Development happens locally with remote deployment to Kria board at `192.168.100.8`.
 
-### Local Setup
+## Quick Start
+
 ```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Remote Deployment to Kria Board
-
-The project is configured for remote deployment to a Kria board at `192.168.100.8`. Use VSCode tasks or manual commands:
-
-**Deploy to Kria:**
-```bash
+# Deploy to Kria
 rsync -avz --exclude=venv --exclude=.git --exclude=__pycache__ ./ ubuntu@192.168.100.8:~/kria-camera-demo/
+
+# Run DPU benchmark with layer-by-layer profiling
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && ./run_vaitrace.sh -n 500"
+
+# Download profiling results
+scp ubuntu@192.168.100.8:~/kria-camera-demo/*.csv ./
 ```
 
-**Run on Kria:**
-```bash
-ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py"
-```
+## Applications
 
-**Run with custom model:**
-```bash
-ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py -m models/custom_model"
-```
+### 1. Synthetic Benchmark (benchmark_dpu.py)
 
-**Note:** Root permissions are required for PYNQ DPU overlay to access hardware MMIO registers.
+**Purpose:** DPU performance profiling without camera dependency.
 
-**Install dependencies on Kria:**
-```bash
-ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && pip3 install -r requirements.txt"
-```
-
-**Deploy and run (combined):**
-Use the VSCode task "Run on Kria (192.168.100.8)" which automatically deploys first, then executes.
-
-## Application Architecture
-
-### Main Application: kria-camera-demo.py
-
-The primary application captures and visualizes RealSense camera streams with DPU inference:
+**Features:**
+- Uses random images (no camera required)
+- Vaitrace instrumentation with `@vai_tracepoint` decorators
+- Comprehensive statistics (mean, std, min, max, P50, P95, P99)
+- Warmup phase for accurate measurements
+- Reproducible with fixed random seed
 
 **Command-Line Options:**
-- `-m, --model-dir`: Path to model directory containing meta.json (default: models/mobilenet_v2)
-- `-b, --dpu-bit`: Path to DPU bitstream file (default: dpu.bit)
-- `-l, --labels`: Path to class labels file (default: words.txt)
+- `-n, --num-frames N` - Number of frames to process (default: 100)
+- `--warmup N` - Warmup iterations (default: 10)
+- `--seed N` - Random seed for reproducibility (default: 42)
+- `-m, --model-dir PATH` - Model directory (default: models/mobilenet_v2)
+- `-b, --dpu-bit PATH` - DPU bitstream file (default: dpu.bit)
+- `-l, --labels PATH` - Class labels file (default: words.txt)
 
-**Application Flow:**
+**Vaitrace Instrumentation:**
+The benchmark includes decorated methods that vaitrace automatically profiles:
+- `preprocess_image()` - Image normalization and reshaping
+- `run_dpu_inference()` - DPU execution (key operation)
+- `postprocess_output()` - Softmax and top-k classification
 
-1. **Model Loading**: Reads meta.json from model directory to get model filename and constructs paths for .xmodel and .prototxt files
-2. **Pipeline Setup**: Configures Intel RealSense pipeline with depth (640x480, z16, 30fps) and color (640x480, BGR8, 30fps) streams
-3. **DPU Initialization**: Loads DPU overlay and model for hardware-accelerated inference
-4. **Frame Capture**: Continuously reads coherent depth and color frame pairs
-5. **Inference**: Runs MobileNet V2 classification on color frames using DPU
-6. **Visualization**: Displays results with top-5 predictions, FPS metrics, and system stats
-7. **Exit**: Press 'q' to quit the application
+**Usage:**
+```bash
+# Direct execution
+sudo /usr/local/share/pynq-venv/bin/python3 benchmark_dpu.py -n 500
 
-### Dependencies
+# With vaitrace profiling (recommended)
+./run_vaitrace.sh -n 500
+```
 
-- `pyrealsense2`: Intel RealSense SDK for camera interface
-- `opencv-python`: Image processing and visualization
-- `numpy`: Array operations for frame data
+### 2. Camera Demo (kria-camera-demo.py)
 
-### Remote Execution Context
+**Purpose:** Real-time camera inference with visualization.
 
-The application requires:
-- Physical RealSense camera connected to the Kria board
-- X11 display forwarding configured (DISPLAY=192.168.100.8:0)
-- SSH access to ubuntu@192.168.100.8
-- Root permissions (sudo) for PYNQ hardware access
+**Requirements:**
+- Physical RealSense camera connected to Kria
+- X11 display (DISPLAY=192.168.100.8:0)
+- Root permissions
+
+**Command-Line Options:**
+- `-m, --model-dir PATH` - Model directory (default: models/mobilenet_v2)
+- `-b, --dpu-bit PATH` - DPU bitstream (default: dpu.bit)
+- `-l, --labels PATH` - Class labels (default: words.txt)
+- `--headless` - Run without GUI (for profiling)
+- `--profile-frames N` - Frames in headless mode (default: 100)
+
+**Usage:**
+```bash
+# Normal mode with GUI
+sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py
+
+# Headless for profiling
+./run_vaitrace.sh kria-camera-demo.py
+```
+
+## DPU Profiling with Vaitrace
+
+### Standard Workflow
+
+```bash
+# 1. Deploy code
+rsync -avz --exclude=venv --exclude=.git --exclude=__pycache__ ./ ubuntu@192.168.100.8:~/kria-camera-demo/
+
+# 2. Apply vaitrace bug fix (first time only)
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && ./patch_vaitrace.sh"
+
+# 3. Run profiling (defaults to benchmark_dpu.py)
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && ./run_vaitrace.sh -n 500"
+
+# 4. Download profiling CSV files
+scp ubuntu@192.168.100.8:~/kria-camera-demo/*.csv ./
+```
+
+### Vaitrace Configuration
+
+The `run_vaitrace.sh` script uses:
+- `--fine_grained` - Enables detailed layer-by-layer profiling
+- `--va` - Enables VART runtime tracing
+- Automatic PYTHONPATH setup for PYNQ packages
+- Defaults to `benchmark_dpu.py` with 100 frames
+
+### Vaitrace Bug Fix
+
+**Problem:** Vaitrace has a post-processing bug causing KeyError:
+```
+KeyError: '_fun_XXXXXX'
+File "/usr/bin/xlnx/vaitrace/tracer/function.py", line 416
+```
+
+**Solution:** Apply the patch:
+```bash
+./patch_vaitrace.sh
+```
+
+The patch wraps the problematic line in try-except to handle missing symbols gracefully.
+
+**Rollback:**
+```bash
+sudo cp /usr/bin/xlnx/vaitrace/tracer/function.py.backup_* /usr/bin/xlnx/vaitrace/tracer/function.py
+```
+
+### Profiling Output Files
+
+Generated files after vaitrace completes:
+- `vart_trace.csv` - Layer-by-layer execution trace with timestamps
+- `vitis_ai_profile.csv` - Detailed DPU profiling with utilization metrics
+- `profile_summary.csv` - Aggregated performance summary
+
+## Alternative Profiling
+
+### Simple Benchmark (No vaitrace)
+
+```bash
+./run_benchmark.sh -n 1000
+```
+
+Provides statistics without external profiling overhead.
+
+### Check Available Tools
+
+```bash
+./run_xdputil_profile.sh
+```
+
+Shows available DPU profiling utilities on the system.
 
 ## File Structure
 
-- `kria-camera-demo.py`: Main RealSense camera application (actively used)
-- `main.py`: Placeholder/stub file (minimal implementation)
-- `requirements.txt`: Python dependencies
-- `.vscode/tasks.json`: Deployment and remote execution tasks
-- `.vscode/launch.json`: Debug configurations with remote display settings
+```
+kria-camera-demo/
+├── benchmark_dpu.py              # Synthetic DPU benchmark (vaitrace instrumented)
+├── kria-camera-demo.py           # Real-time camera demo
+├── main.py                       # Placeholder/stub
+├── run_vaitrace.sh               # Vaitrace wrapper (--fine_grained --va)
+├── run_vaitrace_raw.sh           # Vaitrace with error handling
+├── run_benchmark.sh              # Simple benchmark runner
+├── run_dpu_profile.sh            # DPU profiling runner
+├── run_xdputil_profile.sh        # Check profiling tools
+├── patch_vaitrace.sh             # Fix vaitrace KeyError bug
+├── camera_demo/                  # Core package
+│   ├── __init__.py               # Package exports
+│   ├── kria_camera_demo.py       # KriaCameraDemo class
+│   ├── utils.py                  # Utilities (privileges, parsing, labels)
+│   ├── preprocessing.py          # Image preprocessing pipeline
+│   ├── visualization.py          # Display helpers
+│   └── platform_monitor.py       # System stats monitoring
+├── models/mobilenet_v2/          # Model files
+│   ├── meta.json                 # Model metadata
+│   ├── mobilenet_v2.xmodel       # Compiled DPU model
+│   └── mobilenet_v2.prototxt     # Normalization parameters
+├── words.txt                     # ImageNet class labels
+├── dpu.bit                       # DPU overlay bitstream
+├── requirements.txt              # Python dependencies
+├── README.md                     # User documentation
+└── CLAUDE.md                     # This file
+
+## Key Technical Details
+
+### Asyncio Event Loop Handling
+
+DPU initialization requires an asyncio event loop. When running under vaitrace (which uses threads), the code automatically creates one if missing:
+
+```python
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+```
+
+Implemented in both `kria_camera_demo.py` and `benchmark_dpu.py`.
+
+### Vaitrace Tracepoint Usage
+
+`vai_tracepoint` is a **decorator**, not a function:
+
+**Correct:**
+```python
+@vai_tracepoint
+def preprocess_image(self, image):
+    # code
+```
+
+**Incorrect:**
+```python
+vai_tracepoint("preprocessing", "start")  # This will fail
+```
+
+The benchmark includes a fallback dummy decorator when vaitrace is unavailable.
+
+### PYNQ Environment
+
+All applications require the PYNQ virtual environment:
+- Python: `/usr/local/share/pynq-venv/bin/python3`
+- Root permissions required for DPU hardware access
+
+## Dependencies
+
+- `pyrealsense2` - Intel RealSense SDK (camera demo only)
+- `opencv-python` - Image processing and visualization
+- `numpy` - Array operations
+- `pynq_dpu` - PYNQ DPU overlay support
+- `vaitrace_py` - Vitis AI trace profiling (optional)
+
+## Common Issues
+
+### 1. Memory allocation failure with DPU profiling env vars
+
+**Symptom:**
+```
+Check failed: fromdata != ((void *) -1)
+```
+
+**Solution:** Don't use `XLNX_ENABLE_DUMP=1` - use vaitrace instead.
+
+### 2. Vaitrace KeyError
+
+**Symptom:**
+```
+KeyError: '_fun_XXXXXX'
+```
+
+**Solution:** Run `./patch_vaitrace.sh`
+
+### 3. No asyncio event loop
+
+**Symptom:**
+```
+RuntimeError: There is no current event loop in thread
+```
+
+**Solution:** Already fixed in code - creates loop automatically.
+
+## Best Practices
+
+1. **Always patch vaitrace first** - Run `./patch_vaitrace.sh` before profiling
+2. **Use synthetic benchmark** - Faster, reproducible, no camera dependency
+3. **Use sufficient frames** - At least 100 for warmup, 500+ for statistics
+4. **Download CSV files** - Contains layer-by-layer DPU profiling data
+5. **Run with sudo** - Required for DPU hardware access
+
+## Example Workflows
+
+### Profile New Model
+
+```bash
+# 1. Add model to models/ directory
+# 2. Deploy
+rsync -avz --exclude=venv --exclude=.git ./ ubuntu@192.168.100.8:~/kria-camera-demo/
+
+# 3. Profile
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && ./run_vaitrace.sh -m models/new_model -n 500"
+
+# 4. Download results
+scp ubuntu@192.168.100.8:~/kria-camera-demo/*.csv ./
+```
+
+### Quick Performance Check
+
+```bash
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && ./run_benchmark.sh -n 1000"
+```
+
+### Debug Camera Issues
+
+```bash
+ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py"
+```
