@@ -12,12 +12,18 @@ Real-time camera demonstration and DPU performance benchmarking suite for AMD Xi
 - **Smart Text Rendering**: Auto-contrast overlays with semi-transparent backgrounds
 - **Depth Visualization**: Color-mapped depth stream (640x480 @ 30fps)
 
-### DPU Benchmark (benchmark_dpu.py)
+### DPU Benchmark (utils/benchmark_dpu.py)
 - **Synthetic Testing**: Uses random images (no camera required)
 - **Vaitrace Instrumentation**: Layer-by-layer DPU profiling
 - **Comprehensive Statistics**: Mean, std, min, max, P50, P95, P99
 - **Reproducible Results**: Fixed random seed support
 - **Warmup Phase**: Accurate performance measurements
+
+### Trace Analyzer (utils/analyze_trace.py)
+- **Automatic Analysis**: Runs automatically after `run_vaitrace.sh` completes
+- **Per-Layer Stats**: Mean latency, std dev, CoV(%), min/max, efficiency (GOP/s)
+- **Timeline Order**: Layers sorted by execution order in the model
+- **CSV Export**: Save results with `--csv-out`
 
 ## Hardware Requirements
 
@@ -74,7 +80,7 @@ The synthetic benchmark is the recommended way to profile DPU performance:
 ./run_benchmark.sh -n 1000
 
 # Direct execution
-sudo /usr/local/share/pynq-venv/bin/python3 benchmark_dpu.py -n 500
+sudo /usr/local/share/pynq-venv/bin/python3 utils/benchmark_dpu.py -n 500
 ```
 
 **Options:**
@@ -136,6 +142,12 @@ ls -lh *.csv
 - `vitis_ai_profile.csv` - Detailed DPU profiling data
 - `profile_summary.csv` - Performance summary
 
+`run_vaitrace.sh` automatically parses `vart_trace.csv` via `utils/analyze_trace.py` and prints per-layer latency and efficiency statistics when profiling finishes. Use `--csv-out` to save results:
+
+```bash
+python3 utils/analyze_trace.py --csv-out layer_stats.csv
+```
+
 ### Vaitrace Configuration
 
 The `run_vaitrace.sh` script uses:
@@ -157,13 +169,15 @@ This patches `/usr/bin/xlnx/vaitrace/tracer/function.py` to handle missing funct
 
 ```
 kria-camera-demo/
-├── benchmark_dpu.py              # Synthetic DPU benchmark ⭐
 ├── kria-camera-demo.py           # Real-time camera demo
 ├── run_vaitrace.sh               # Vaitrace profiling wrapper ⭐
 ├── run_benchmark.sh              # Simple benchmark runner
 ├── run_dpu_profile.sh            # DPU profiling runner
 ├── run_xdputil_profile.sh        # Check profiling tools
 ├── patch_vaitrace.sh             # Fix vaitrace KeyError ⭐
+├── utils/                        # Offline tools
+│   ├── benchmark_dpu.py          # Synthetic DPU benchmark ⭐
+│   └── analyze_trace.py          # Per-layer trace analysis ⭐
 ├── camera_demo/                  # Core package
 │   ├── kria_camera_demo.py       # Main camera demo class
 │   ├── utils.py                  # Utilities

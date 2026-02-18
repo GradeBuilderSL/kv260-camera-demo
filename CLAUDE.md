@@ -25,7 +25,7 @@ scp ubuntu@192.168.100.8:~/kria-camera-demo/*.csv ./
 
 ## Applications
 
-### 1. Synthetic Benchmark (benchmark_dpu.py)
+### 1. Synthetic Benchmark (utils/benchmark_dpu.py)
 
 **Purpose:** DPU performance profiling without camera dependency.
 
@@ -53,7 +53,7 @@ The benchmark includes decorated methods that vaitrace automatically profiles:
 **Usage:**
 ```bash
 # Direct execution
-sudo /usr/local/share/pynq-venv/bin/python3 benchmark_dpu.py -n 500
+sudo /usr/local/share/pynq-venv/bin/python3 utils/benchmark_dpu.py -n 500
 
 # With vaitrace profiling (recommended)
 ./run_vaitrace.sh -n 500
@@ -108,7 +108,8 @@ The `run_vaitrace.sh` script uses:
 - `--fine_grained` - Enables detailed layer-by-layer profiling
 - `--va` - Enables VART runtime tracing
 - Automatic PYTHONPATH setup for PYNQ packages
-- Defaults to `benchmark_dpu.py` with 100 frames
+- Defaults to `utils/benchmark_dpu.py` with 100 frames
+- Automatically runs `utils/analyze_trace.py` after profiling completes
 
 ### Vaitrace Bug Fix
 
@@ -159,15 +160,17 @@ Shows available DPU profiling utilities on the system.
 
 ```
 kria-camera-demo/
-├── benchmark_dpu.py              # Synthetic DPU benchmark (vaitrace instrumented)
 ├── kria-camera-demo.py           # Real-time camera demo
 ├── main.py                       # Placeholder/stub
-├── run_vaitrace.sh               # Vaitrace wrapper (--fine_grained --va)
+├── run_vaitrace.sh               # Vaitrace wrapper (--fine_grained --va); runs analyze_trace.py after
 ├── run_vaitrace_raw.sh           # Vaitrace with error handling
 ├── run_benchmark.sh              # Simple benchmark runner
 ├── run_dpu_profile.sh            # DPU profiling runner
 ├── run_xdputil_profile.sh        # Check profiling tools
 ├── patch_vaitrace.sh             # Fix vaitrace KeyError bug
+├── utils/                        # Offline analysis and benchmarking tools
+│   ├── benchmark_dpu.py          # Synthetic DPU benchmark (vaitrace instrumented)
+│   └── analyze_trace.py          # Parse vart_trace.csv; per-layer latency/efficiency stats
 ├── camera_demo/                  # Core package
 │   ├── __init__.py               # Package exports
 │   ├── kria_camera_demo.py       # KriaCameraDemo class
@@ -199,7 +202,7 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 ```
 
-Implemented in both `kria_camera_demo.py` and `benchmark_dpu.py`.
+Implemented in both `kria_camera_demo.py` and `utils/benchmark_dpu.py`.
 
 ### Vaitrace Tracepoint Usage
 

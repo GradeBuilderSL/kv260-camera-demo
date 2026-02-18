@@ -28,12 +28,12 @@ done
 
 # Default to benchmark_dpu.py if no script specified
 if [[ -z "$SCRIPT_FILE" ]]; then
-    SCRIPT_FILE="benchmark_dpu.py"
+    SCRIPT_FILE="utils/benchmark_dpu.py"
     echo "No script specified, using synthetic benchmark: $SCRIPT_FILE"
 fi
 
 # Script-specific configuration
-if [[ "$SCRIPT_FILE" == "benchmark_dpu.py" ]]; then
+if [[ "$SCRIPT_FILE" == "utils/benchmark_dpu.py" ]]; then
     # Ensure benchmark has reasonable defaults
     if [[ "$EXTRA_ARGS" != *"-n"* ]] && [[ "$EXTRA_ARGS" != *"--num-frames"* ]]; then
         echo "Using default 100 frames for benchmark"
@@ -45,4 +45,14 @@ echo "Running vaitrace on: $SCRIPT_FILE $EXTRA_ARGS"
 echo ""
 
 # Run vaitrace with the provided arguments
-exec /usr/local/share/pynq-venv/bin/python -m vaitrace_py --fine_grained --va $SCRIPT_FILE $EXTRA_ARGS
+/usr/local/share/pynq-venv/bin/python -m vaitrace_py --fine_grained --va $SCRIPT_FILE $EXTRA_ARGS
+
+# Analyze the generated trace
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_DIR/xrt.run_summary" ]]; then
+    echo ""
+    echo "--- Trace Analysis ---"
+    python3 "$SCRIPT_DIR/utils/analyze_trace.py" "$SCRIPT_DIR/xrt.run_summary"
+else
+    echo "Warning: xrt.run_summary not found, skipping trace analysis"
+fi
