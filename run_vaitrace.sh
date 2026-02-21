@@ -5,8 +5,9 @@
 
 set -e
 
-# Set PYTHONPATH to include PYNQ virtual environment packages
-export PYTHONPATH=/usr/local/share/pynq-venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/dist-packages
+# Set PYTHONPATH to include PYNQ virtual environment packages and project root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="$SCRIPT_DIR":/usr/local/share/pynq-venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/dist-packages
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -48,7 +49,6 @@ echo ""
 /usr/local/share/pynq-venv/bin/python -m vaitrace_py --fine_grained --va $SCRIPT_FILE $EXTRA_ARGS
 
 # Analyze the generated trace
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ -f "$SCRIPT_DIR/xrt.run_summary" ]]; then
     echo ""
     echo "--- Trace Analysis ---"
