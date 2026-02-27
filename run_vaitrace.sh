@@ -18,10 +18,13 @@ fi
 # Parse arguments to find Python script
 SCRIPT_FILE=""
 EXTRA_ARGS=""
+BYPASS=0
 
 for arg in "$@"; do
     if [[ "$arg" == *.py ]]; then
         SCRIPT_FILE="$arg"
+    elif [[ "$arg" == "-b" || "$arg" == "--bypass" ]]; then
+        BYPASS=1
     else
         EXTRA_ARGS="$EXTRA_ARGS $arg"
     fi
@@ -42,17 +45,21 @@ if [[ "$SCRIPT_FILE" == "utils/benchmark_dpu.py" ]]; then
     fi
 fi
 
-echo "Running vaitrace on: $SCRIPT_FILE $EXTRA_ARGS"
-echo ""
-
-# Run vaitrace with the provided arguments
-/usr/local/share/pynq-venv/bin/python -m vaitrace_py --fine_grained --va $SCRIPT_FILE $EXTRA_ARGS
-
-# Analyze the generated trace
-if [[ -f "$SCRIPT_DIR/xrt.run_summary" ]]; then
+if [[ "$BYPASS" -eq 1 ]]; then
+    echo "Running (bypass mode, no tracing): $SCRIPT_FILE $EXTRA_ARGS"
     echo ""
-    echo "--- Trace Analysis ---"
-    python3 "$SCRIPT_DIR/utils/analyze_trace.py" "$SCRIPT_DIR/xrt.run_summary"
+    /usr/local/share/pynq-venv/bin/python $SCRIPT_FILE $EXTRA_ARGS
 else
-    echo "Warning: xrt.run_summary not found, skipping trace analysis"
+    echo "Running vaitrace on: $SCRIPT_FILE $EXTRA_ARGS"
+    echo ""
+    /usr/local/share/pynq-venv/bin/python -m vaitrace_py --fine_grained --va $SCRIPT_FILE $EXTRA_ARGS
+
+    # Analyze the generated trace
+    if [[ -f "$SCRIPT_DIR/xrt.run_summary" ]]; then
+        echo ""
+        echo "--- Trace Analysis ---"
+        python3 "$SCRIPT_DIR/utils/analyze_trace.py" "$SCRIPT_DIR/xrt.run_summary"
+    else
+        echo "Warning: xrt.run_summary not found, skipping trace analysis"
+    fi
 fi
