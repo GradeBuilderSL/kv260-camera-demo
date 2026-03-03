@@ -4,3 +4,5 @@ pyrealsense2
 # OpenCV for image processing and visualization
 opencv-python
 numpy
+pandas
+matplotlib

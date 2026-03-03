@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Synthetic DPU Benchmark - Test DPU inference performance with random data."""
 
+import logging
+import sys
 import numpy as np
 import time
 import argparse
@@ -17,17 +19,69 @@ from camera_demo import (
 
 from pynq_dpu import DpuOverlay
 
+# ---------------------------------------------------------------------------
+# Logging — dmesg-style timestamps (milliseconds since boot)
+# ---------------------------------------------------------------------------
+
+def _read_uptime_ms() -> float:
+    """Read current uptime from /proc/uptime and return it in milliseconds."""
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0]) * 1000.0
+
+
+class _BootTimeFormatter(logging.Formatter):
+    """Logging formatter that prefixes every record with time-since-boot in ms.
+
+    Format matches dmesg style:
+        [305122460.123] INFO     message text
+                                 continuation line (aligned)
+    The uptime is read once from /proc/uptime at construction and then tracked
+    cheaply via time.monotonic() to avoid a file read on every log call.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._uptime_at_init_ms = _read_uptime_ms()
+        self._mono_at_init      = time.monotonic()
+
+    def _boot_ms(self) -> float:
+        return self._uptime_at_init_ms + (time.monotonic() - self._mono_at_init) * 1000.0
+
+    def format(self, record: logging.LogRecord) -> str:
+        ms     = self._boot_ms()
+        prefix = f"[{ms:>13.3f}] {record.levelname:<8} "
+        msg    = record.getMessage()
+        indent = " " * len(prefix)
+        return prefix + ("\n" + indent).join(msg.splitlines())
+
+
+def _setup_logging(level: int = logging.DEBUG) -> None:
+    handler = logging.StreamHandler(sys.stdout)   # stdout so tee captures it
+    handler.setFormatter(_BootTimeFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
+_setup_logging()
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Vaitrace instrumentation
+# ---------------------------------------------------------------------------
+
 # Import vaitrace for detailed profiling
 try:
     from vaitrace_py import vai_tracepoint
     VAITRACE_AVAILABLE = True
-    print("✓ vaitrace instrumentation enabled")
+    logger.info("vaitrace instrumentation enabled")
 except ImportError:
     # Fallback: create dummy decorator
     def vai_tracepoint(func):
         return func
     VAITRACE_AVAILABLE = False
-    print("ℹ vaitrace not available, running without instrumentation")
+    logger.warning("vaitrace not available, running without instrumentation")
 
 
 def parse_arguments():
@@ -99,15 +153,15 @@ class DpuBenchmark:
             labels_path: Path to the words.txt file with class labels
         """
         # Load normalization parameters
-        print(f"Loading normalization parameters from {prototxt_path}...")
+        logger.info(f"Loading normalization parameters from {prototxt_path}")
         self.norm_params = parse_prototxt(prototxt_path)
-        print(f"Mean values (BGR): {self.norm_params['mean']}")
-        print(f"Scale values (BGR): {self.norm_params['scale']}")
+        logger.debug(f"Mean values (BGR): {self.norm_params['mean']}")
+        logger.debug(f"Scale values (BGR): {self.norm_params['scale']}")
 
         # Load class labels
-        print(f"Loading class labels from {labels_path}...")
+        logger.info(f"Loading class labels from {labels_path}")
         self.labels = load_labels(labels_path)
-        print(f"Loaded {len(self.labels)} class labels")
+        logger.info(f"Loaded {len(self.labels)} class labels")
 
         # Ensure event loop exists for PYNQ (needed for vaitrace profiling)
         try:
@@ -116,10 +170,10 @@ class DpuBenchmark:
             # No event loop in current thread, create one
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            print("Created new asyncio event loop for PYNQ")
+            logger.debug("Created new asyncio event loop for PYNQ")
 
         # Initialize DPU
-        print("Creating DPU overlay...")
+        logger.info("Creating DPU overlay...")
         self.overlay = DpuOverlay(dpu_bit_path)
         self.overlay.load_model(model_path)
 
@@ -131,8 +185,8 @@ class DpuBenchmark:
         self.shapeOut = tuple(outputTensors[0].dims)
         self.outputSize = int(outputTensors[0].get_data_size() / self.shapeIn[0])
 
-        print(f"DPU Input shape: {self.shapeIn}")
-        print(f"DPU Output shape: {self.shapeOut}")
+        logger.info(f"DPU Input shape:  {self.shapeIn}")
+        logger.info(f"DPU Output shape: {self.shapeOut}")
 
         self.output_data = [np.empty(self.shapeOut, dtype=np.float32, order="C")]
         self.input_data = [np.empty(self.shapeIn, dtype=np.float32, order="C")]
@@ -252,7 +306,7 @@ class DpuBenchmark:
             del self.dpu
 
         self.overlay.free()
-        print("DPU overlay resources released")
+        logger.info("DPU overlay resources released")
 
 
 def main():
@@ -265,15 +319,15 @@ def main():
 
     # Set random seed for reproducibility
     np.random.seed(args.seed)
-    print(f"Random seed: {args.seed}")
+    logger.info(f"Random seed: {args.seed}")
 
     # Load model metadata from meta.json
-    print(f"Loading model metadata from {args.model_dir}/meta.json...")
+    logger.info(f"Loading model metadata from {args.model_dir}/meta.json")
     model_info = load_model_metadata(args.model_dir)
 
-    print(f"Model file: {model_info['model_path']}")
-    print(f"Prototxt file: {model_info['prototxt_path']}")
-    print(f"Target: {model_info['metadata'].get('target', 'Unknown')}")
+    logger.debug(f"Model file:    {model_info['model_path']}")
+    logger.debug(f"Prototxt file: {model_info['prototxt_path']}")
+    logger.debug(f"Target:        {model_info['metadata'].get('target', 'Unknown')}")
 
     # Initialize the benchmark
     benchmark = DpuBenchmark(
@@ -284,22 +338,21 @@ def main():
     )
 
     try:
-        print(f"\n{'='*60}")
-        print(f"DPU SYNTHETIC BENCHMARK")
-        print(f"{'='*60}")
-        print(f"Warmup iterations: {args.warmup}")
-        print(f"Benchmark iterations: {args.num_frames}")
-        print(f"{'='*60}\n")
+        logger.info("=" * 60)
+        logger.info("DPU SYNTHETIC BENCHMARK")
+        logger.info(f"Warmup iterations:    {args.warmup}")
+        logger.info(f"Benchmark iterations: {args.num_frames}")
+        logger.info("=" * 60)
 
         # Warmup phase
-        print("Warming up DPU...")
+        logger.info("Warming up DPU...")
         for i in range(args.warmup):
             random_image = benchmark.generate_random_image()
             _, warmup_time = benchmark.run_inference(random_image)
             if (i + 1) % 5 == 0:
-                print(f"  Warmup {i+1}/{args.warmup} - {warmup_time*1000:.2f}ms")
+                logger.debug(f"Warmup {i+1}/{args.warmup} — {warmup_time*1000:.2f} ms")
 
-        print(f"\nWarmup complete. Starting benchmark...\n")
+        logger.info("Warmup complete. Starting benchmark...")
 
         # Benchmark phase
         inference_times = []
@@ -316,9 +369,10 @@ def main():
             # Print progress
             if (i + 1) % 10 == 0:
                 avg_time = np.mean(inference_times)
-                print(f"Processed {i+1}/{args.num_frames} frames, "
-                      f"Avg DPU time: {avg_time*1000:.2f}ms "
-                      f"({1.0/avg_time:.2f} FPS)")
+                logger.info(
+                    f"Processed {i+1}/{args.num_frames} frames — "
+                    f"avg DPU: {avg_time*1000:.2f} ms ({1.0/avg_time:.2f} FPS)"
+                )
 
         end_time = time.perf_counter()
         total_time = end_time - start_time
@@ -334,23 +388,21 @@ def main():
         p99_time = np.percentile(inference_times, 99)
 
         # Print results
-        results_text = f"\n{'='*60}\n"
-        results_text += f"BENCHMARK RESULTS\n"
-        results_text += f"{'='*60}\n"
-        results_text += f"Total frames processed: {args.num_frames}\n"
-        results_text += f"Total time: {total_time:.3f}s\n"
-        results_text += f"Overall throughput: {args.num_frames/total_time:.2f} FPS\n"
-        results_text += f"\nDPU Inference Statistics:\n"
-        results_text += f"  Mean:   {mean_time*1000:.3f}ms ({1.0/mean_time:.2f} FPS)\n"
-        results_text += f"  Std:    {std_time*1000:.3f}ms\n"
-        results_text += f"  Min:    {min_time*1000:.3f}ms ({1.0/min_time:.2f} FPS)\n"
-        results_text += f"  Max:    {max_time*1000:.3f}ms ({1.0/max_time:.2f} FPS)\n"
-        results_text += f"  Median: {p50_time*1000:.3f}ms\n"
-        results_text += f"  P95:    {p95_time*1000:.3f}ms\n"
-        results_text += f"  P99:    {p99_time*1000:.3f}ms\n"
-        results_text += f"{'='*60}\n"
-
-        print(results_text)
+        logger.info("=" * 60)
+        logger.info("BENCHMARK RESULTS")
+        logger.info("=" * 60)
+        logger.info(f"Total frames processed: {args.num_frames}")
+        logger.info(f"Total time:             {total_time:.3f} s")
+        logger.info(f"Overall throughput:     {args.num_frames/total_time:.2f} FPS")
+        logger.info("DPU Inference Statistics:")
+        logger.info(f"  Mean:   {mean_time*1000:.3f} ms  ({1.0/mean_time:.2f} FPS)")
+        logger.info(f"  Std:    {std_time*1000:.3f} ms")
+        logger.info(f"  Min:    {min_time*1000:.3f} ms  ({1.0/min_time:.2f} FPS)")
+        logger.info(f"  Max:    {max_time*1000:.3f} ms  ({1.0/max_time:.2f} FPS)")
+        logger.info(f"  Median: {p50_time*1000:.3f} ms")
+        logger.info(f"  P95:    {p95_time*1000:.3f} ms")
+        logger.info(f"  P99:    {p99_time*1000:.3f} ms")
+        logger.info("=" * 60)
 
     finally:
         benchmark.cleanup()
