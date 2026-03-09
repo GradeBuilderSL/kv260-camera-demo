@@ -378,9 +378,18 @@ When adding new models:
 3. Add `meta.json`, `.prototxt`, and `md5sum.txt`
 4. Test with benchmark first: `./run_vaitrace.sh -m models/new_model -n 100`
 
+## Funding
+
+[![dAIEDGE Project](https://img.shields.io/badge/dAIEDGE-Project-6A5ACD?style=for-the-badge)](https://daiedge.eu/)
+[![EU Horizon Europe](https://img.shields.io/badge/Funded%20by-EU%20Horizon%20Europe-003399?style=for-the-badge&logo=europeanunion&logoColor=white)](https://research-and-innovation.ec.europa.eu/funding/funding-opportunities/funding-programmes-and-open-calls/horizon-europe_en)
+
+This work was supported by the **[dAIEDGE Open Call Programme](https://daiedge.eu/)**, funded by the **[European Union's Horizon Europe research and innovation programme](https://research-and-innovation.ec.europa.eu/funding/funding-opportunities/funding-programmes-and-open-calls/horizon-europe_en)**.
+
 ## License
 
-[Add your license here]
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+You may use, reproduce, and distribute this work under the terms of the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for the full text.
 
 ## References
 
