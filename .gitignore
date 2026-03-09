@@ -18,3 +18,10 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Profiler
+*.csv
+xrt.run_summary
+
+figures/
+
