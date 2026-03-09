@@ -1,108 +1,51 @@
 # Kria Camera Demo & DPU Benchmark
 
-Real-time camera demonstration and DPU performance benchmarking suite for AMD Xilinx Kria KV260 Vision AI Starter Kit.
+Real-time object classification demo and DPU performance benchmarking suite for the AMD Xilinx Kria KV260 Vision AI Starter Kit, combining Intel RealSense camera integration with Vitis AI inference and layer-by-layer profiling via vaitrace.
+
+## Platform Setup
+
+The system connects a **RealSense D435 camera** to the **Kria KV260** board via USB, with the board accessible over Ethernet through a WiFi router from a development laptop.
+
+![Platform Setup](doc/platform_setup.png)
 
 ## Features
 
-### Camera Demo (kria-camera-demo.py)
-- **Real-time Object Classification**: MobileNet V2 inference on live RealSense camera feed
-- **Dual FPS Monitoring**: Overall frame rate and DPU inference speed
-- **System Monitoring**: Power, temperature, CPU utilization, and memory usage
-- **Top-5 Predictions**: Classification results with confidence scores
-- **Smart Text Rendering**: Auto-contrast overlays with semi-transparent backgrounds
-- **Depth Visualization**: Color-mapped depth stream (640x480 @ 30fps)
+### Camera Demo
+- **Real-time Object Classification** — MobileNet V2 inference on live RealSense camera feed
+- **Dual FPS Monitoring** — Overall frame rate and DPU inference speed
+- **System Monitoring** — Power, temperature, CPU utilization, and memory usage
+- **Top-5 Predictions** — Classification results with confidence scores
+- **Depth Visualization** — Color-mapped depth stream (640×480 @ 30fps)
 
-### DPU Benchmark (utils/benchmark_dpu.py)
-- **Synthetic Testing**: Uses random images (no camera required)
-- **Vaitrace Instrumentation**: Layer-by-layer DPU profiling
-- **Comprehensive Statistics**: Mean, std, min, max, P50, P95, P99
-- **Reproducible Results**: Fixed random seed support
-- **Warmup Phase**: Accurate performance measurements
+### DPU Benchmark
+- **Synthetic Testing** — Uses random images, no camera required
+- **Vaitrace Instrumentation** — Layer-by-layer DPU profiling
+- **Comprehensive Statistics** — Mean, std, min, max, P50, P95, P99
+- **Reproducible Results** — Fixed random seed support
+- **Warmup Phase** — Ensures accurate steady-state measurements
 
-### Trace Analyzer (utils/analyze_trace.py)
-- **Automatic Analysis**: Runs automatically after `run_vaitrace.sh` completes
-- **Per-Layer Stats**: Mean latency, std dev, CoV(%), min/max, efficiency (GOP/s)
-- **Timeline Order**: Layers sorted by execution order in the model
-- **CSV Export**: Save results with `--csv-out`
+### Trace Analyzer
+- **Automatic Analysis** — Runs automatically after `run_vaitrace.sh` completes
+- **Per-Layer Stats** — Mean latency, std dev, CoV(%), min/max, efficiency (GOP/s)
+- **Timeline Order** — Layers sorted by execution order in the model
+- **CSV Export** — Save results with `--csv-out`
 
-## Hardware Requirements
+## Requirements
 
-- **AMD Xilinx Kria KV260 Vision AI Starter Kit**
-- **Intel RealSense Depth Camera** (D400 series) - for camera demo only
-- USB 3.0 connection (for camera)
-- Network connection for remote deployment
+### Hardware
 
-## Software Requirements
+| Component | Details |
+|-----------|---------|
+| AMD Xilinx Kria KV260 | Vision AI Starter Kit |
+| Intel RealSense D435 | Connected via USB 3.0 (camera demo only) |
+| Network | Ethernet/WiFi for remote deployment |
+
+### Software
 
 - PYNQ framework with DPU support
 - Python 3.10
 - DPU bitstream (`dpu.bit`)
 - Vitis AI runtime
-
-## Downloading Models
-
-Model files (`.xmodel`) are **not included** in this repository due to their size. You must download them separately from the [Vitis AI Model Zoo](https://github.com/Xilinx/Vitis-AI/tree/master/model_zoo).
-
-### Available Models
-
-| Model | Input Size | Target DPU |
-|-------|-----------|------------|
-| `mobilenet_v2` | 224×224 | DPUCZDX8G_ISA1_B4096 |
-| `mobilenet_v1_1_0_224_tf` | 224×224 | DPUCZDX8G_ISA1_B4096 |
-| `resnet50` | 224×224 | DPUCZDX8G_ISA1_B4096 |
-
-### Download Instructions
-
-Download pre-compiled `.xmodel` files for target `DPUCZDX8G_ISA1_B4096` (Zynq UltraScale+ MPSoC / Kria KV260) from the Vitis AI model zoo:
-
-```
-https://github.com/Xilinx/Vitis-AI/tree/master/model_zoo/model-list
-```
-
-### Installing a Downloaded Model
-
-After downloading, place the files in the correct directory structure:
-
-```
-models/
-└── your_model/
-    ├── meta.json                  # Model metadata (see format below)
-    ├── your_model.xmodel          # Compiled DPU model
-    └── your_model.prototxt        # Preprocessing parameters
-```
-
-**meta.json format:**
-```json
-{
-    "lib": "libvart-dpu-runner.so",
-    "filename": "your_model.xmodel",
-    "kernel": ["subgraph_name"],
-    "target": "DPUCZDX8G_ISA1_B4096"
-}
-```
-
-**prototxt format:**
-```
-transform_param {
-  mean_value: 104.0
-  mean_value: 117.0
-  mean_value: 123.0
-  scale: 0.00392157
-  scale: 0.00392157
-  scale: 0.00392157
-}
-```
-
-> **Note:** The `kernel` name in `meta.json` must match the subgraph name in the `.xmodel` file. You can inspect the xmodel with `xir subgraph <model>.xmodel` on the Kria board.
-
-### Verify Download Integrity
-
-Each model directory contains an `md5sum.txt` file. Verify after downloading:
-
-```bash
-cd models/mobilenet_v2
-md5sum -c md5sum.txt
-```
 
 ## Quick Start
 
@@ -131,33 +74,125 @@ scp ubuntu@192.168.100.8:~/kria-camera-demo/*.csv ./
 ssh ubuntu@192.168.100.8 "cd ~/kria-camera-demo && sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py"
 ```
 
+## Installation
+
+### On Your Development Machine
+
+```bash
+git clone <repository-url>
+cd kria-camera-demo
+```
+
+Model files are not included in the repo. See [Downloading Models](#downloading-models) below.
+
+### On the Kria Board
+
+1. Activate the PYNQ environment:
+   ```bash
+   source /usr/local/share/pynq-venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip3 install -r requirements.txt
+   ```
+
+3. Verify the DPU bitstream is present:
+   ```bash
+   ls dpu.bit
+   ```
+
+4. Download model files and place them in `models/` (see [Downloading Models](#downloading-models)).
+
+## Downloading Models
+
+Model files (`.xmodel`) are **not included** in this repository due to their size. Download them from the [Vitis AI Model Zoo](https://github.com/Xilinx/Vitis-AI/tree/master/model_zoo).
+
+### Supported Models
+
+| Model | Input Size | Target DPU |
+|-------|-----------|------------|
+| `mobilenet_v2` | 224×224 | DPUCZDX8G_ISA1_B4096 |
+| `mobilenet_v1_1_0_224_tf` | 224×224 | DPUCZDX8G_ISA1_B4096 |
+| `resnet50` | 224×224 | DPUCZDX8G_ISA1_B4096 |
+
+Download pre-compiled `.xmodel` files for target `DPUCZDX8G_ISA1_B4096` from:
+
+```
+https://github.com/Xilinx/Vitis-AI/tree/master/model_zoo/model-list
+```
+
+### Directory Structure
+
+Place downloaded files as follows:
+
+```
+models/
+└── your_model/
+    ├── meta.json                  # Model metadata
+    ├── your_model.xmodel          # Compiled DPU model
+    └── your_model.prototxt        # Preprocessing parameters
+```
+
+**meta.json format:**
+```json
+{
+    "lib": "libvart-dpu-runner.so",
+    "filename": "your_model.xmodel",
+    "kernel": ["subgraph_name"],
+    "target": "DPUCZDX8G_ISA1_B4096"
+}
+```
+
+**prototxt format:**
+```
+transform_param {
+  mean_value: 104.0
+  mean_value: 117.0
+  mean_value: 123.0
+  scale: 0.00392157
+  scale: 0.00392157
+  scale: 0.00392157
+}
+```
+
+> **Note:** The `kernel` name in `meta.json` must match the subgraph name in the `.xmodel` file. Inspect the model with `xir subgraph <model>.xmodel` on the Kria board.
+
+### Verify Download Integrity
+
+```bash
+cd models/mobilenet_v2
+md5sum -c md5sum.txt
+```
+
 ## Usage
 
 ### DPU Benchmark
 
-The synthetic benchmark is the recommended way to profile DPU performance:
+The synthetic benchmark is the recommended way to profile DPU performance — no camera needed.
 
 ```bash
-# Run with vaitrace profiling (recommended)
+# With vaitrace profiling (recommended)
 ./run_vaitrace.sh -n 500
 
 # Direct execution (no profiling)
 sudo /usr/local/share/pynq-venv/bin/python3 utils/benchmark_dpu.py -n 500
 ```
 
-**Options:**
-```
--n, --num-frames N    Number of frames to process (default: 100)
---warmup N           Warmup iterations (default: 10)
---seed N             Random seed for reproducibility (default: 42)
--m, --model-dir PATH  Model directory (default: models/mobilenet_v2)
--b, --dpu-bit PATH    DPU bitstream file (default: dpu.bit)
--l, --labels PATH     Class labels file (default: words.txt)
-```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-n, --num-frames N` | Number of frames to process | 100 |
+| `--warmup N` | Warmup iterations | 10 |
+| `--seed N` | Random seed for reproducibility | 42 |
+| `-m, --model-dir PATH` | Model directory | `models/mobilenet_v2` |
+| `-b, --dpu-bit PATH` | DPU bitstream file | `dpu.bit` |
+| `-l, --labels PATH` | Class labels file | `words.txt` |
 
 ### Camera Demo
 
-Real-time camera application with visualization:
+Real-time camera application with live visualization. The interface shows the classified object, top-5 predictions with confidence scores, DPU inference FPS, and system stats (power, temperature, CPU, memory).
+
+![Demo Interface](doc/interface_screenshot.png)
 
 ```bash
 # Normal mode with GUI
@@ -170,39 +205,40 @@ sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py
 sudo /usr/local/share/pynq-venv/bin/python3 kria-camera-demo.py -m models/resnet50
 ```
 
-**Options:**
-```
--m, --model-dir PATH    Model directory (default: models/mobilenet_v2)
--b, --dpu-bit PATH      DPU bitstream (default: dpu.bit)
--l, --labels PATH       Class labels (default: words.txt)
---headless             Run without GUI (for profiling)
---profile-frames N      Frames in headless mode (default: 100)
-```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-m, --model-dir PATH` | Model directory | `models/mobilenet_v2` |
+| `-b, --dpu-bit PATH` | DPU bitstream | `dpu.bit` |
+| `-l, --labels PATH` | Class labels | `words.txt` |
+| `--headless` | Run without GUI (for profiling) | — |
+| `--profile-frames N` | Frames in headless mode | 100 |
 
-**Controls:**
-- Press `q` to quit
+Press `q` to quit the GUI.
 
 ## Profiling with Vaitrace
 
-### Layer-by-Layer DPU Profiling
+Vaitrace provides layer-by-layer DPU profiling with minimal overhead.
 
 ```bash
-# 1. Apply vaitrace patch (fixes KeyError bug)
+# 1. Apply vaitrace patch (fixes a KeyError bug — run once)
 ./patch_vaitrace.sh
 
 # 2. Run profiling
 ./run_vaitrace.sh -n 500
 
-# 3. Check generated files
+# 3. Check generated output files
 ls -lh *.csv
 ```
 
-**Generated Files:**
-- `vart_trace.csv` - Layer-by-layer execution trace
-- `vitis_ai_profile.csv` - Detailed DPU profiling data
-- `profile_summary.csv` - Performance summary
+**Output files:**
 
-`run_vaitrace.sh` automatically parses `vart_trace.csv` via `utils/analyze_trace.py` and prints per-layer latency and efficiency statistics when profiling finishes. Save results with `--csv-out`:
+| File | Contents |
+|------|----------|
+| `vart_trace.csv` | Layer-by-layer execution trace with timestamps |
+| `vitis_ai_profile.csv` | Detailed DPU profiling and utilization metrics |
+| `profile_summary.csv` | Aggregated performance summary |
+
+`run_vaitrace.sh` automatically parses `vart_trace.csv` via `utils/analyze_trace.py` and prints per-layer latency and efficiency statistics when profiling finishes. To save those results:
 
 ```bash
 python3 utils/analyze_trace.py --csv-out layer_stats.csv
@@ -210,24 +246,29 @@ python3 utils/analyze_trace.py --csv-out layer_stats.csv
 
 ### DDR Traffic Analysis
 
-The `utils/plot_ddr_traffic.py` script visualizes DDR memory bandwidth from profiling results. See `doc/mem_io_metric.md` for an explanation of `Mem IO(MB)` and `Mem Bandwidth(MB/s)` columns in `profile_summary.csv`.
+`utils/plot_ddr_traffic.py` visualizes DDR memory bandwidth from profiling results. See `doc/mem_io_metric.md` for an explanation of the `Mem IO(MB)` and `Mem Bandwidth(MB/s)` columns in `profile_summary.csv`.
 
 ### Vaitrace Configuration
 
-The `run_vaitrace.sh` script uses:
-- `--fine_grained` flag for detailed layer profiling
-- `--va` flag for VART runtime tracing
-- Automatic PYTHONPATH configuration for PYNQ packages
+`run_vaitrace.sh` uses `--fine_grained` for detailed layer profiling and `--va` for VART runtime tracing, with automatic PYTHONPATH setup for PYNQ packages.
 
-### Known Issue: Vaitrace Bug
+## Performance
 
-Vaitrace has a post-processing bug that causes KeyError crashes. **Apply the patch before profiling:**
+### Expected Results (MobileNet V2)
 
-```bash
-./patch_vaitrace.sh
-```
+| Stage | Latency | Throughput |
+|-------|---------|------------|
+| DPU Inference | ~6ms | 160+ FPS |
+| Full Pipeline (camera + pre/postprocessing) | — | 25–35 FPS |
+| Preprocessing | ~1–2ms | — |
+| Postprocessing | <1ms | — |
 
-This patches `/usr/bin/xlnx/vaitrace/tracer/function.py` to handle missing function symbols gracefully.
+### Tips for Accurate Measurements
+
+1. Use the synthetic benchmark to isolate DPU performance from camera I/O
+2. Use at least 500 frames for stable statistics
+3. Always apply the vaitrace patch before profiling
+4. Check P95/P99 latencies for worst-case analysis
 
 ## Project Structure
 
@@ -235,23 +276,24 @@ This patches `/usr/bin/xlnx/vaitrace/tracer/function.py` to handle missing funct
 kria-camera-demo/
 ├── kria-camera-demo.py               # Real-time camera demo
 ├── run_vaitrace.sh                   # Vaitrace profiling wrapper ⭐
-├── patch_vaitrace.sh                 # Fix vaitrace KeyError ⭐
-├── utils/                            # Offline analysis and benchmarking tools
+├── patch_vaitrace.sh                 # Fix vaitrace KeyError bug ⭐
+├── utils/
 │   ├── benchmark_dpu.py              # Synthetic DPU benchmark ⭐
 │   ├── analyze_trace.py              # Per-layer trace analysis ⭐
 │   ├── plot_ddr_traffic.py           # DDR bandwidth visualization
 │   └── sync_timestamps.py            # Timestamp synchronization utility
-├── camera_demo/                      # Core package
+├── camera_demo/
 │   ├── kria_camera_demo.py           # Main camera demo class
 │   ├── utils.py                      # Utilities
 │   ├── preprocessing.py              # Image preprocessing
 │   ├── visualization.py              # Display helpers
 │   └── platform_monitor.py           # System monitoring
-├── models/                           # Model directories (not in repo — download separately)
-│   ├── mobilenet_v2/                 # MobileNet V2
-│   ├── mobilenet_v1_1_0_224_tf/      # MobileNet V1 TF
-│   └── resnet50/                     # ResNet-50
-├── doc/                              # Documentation
+├── models/                           # Model directories (download separately)
+│   ├── mobilenet_v2/
+│   ├── mobilenet_v1_1_0_224_tf/
+│   └── resnet50/
+├── doc/
+│   ├── platform_setup.png            # Hardware setup diagram
 │   ├── mem_io_metric.md              # DDR memory metric explanations
 │   └── ddrc_port_assignments.md      # DDR controller port reference
 ├── words.txt                         # ImageNet labels (1000 classes)
@@ -261,108 +303,55 @@ kria-camera-demo/
 
 ⭐ = Essential for DPU profiling
 
-## Installation
-
-### On Development Machine
-
-```bash
-git clone <repository-url>
-cd kria-camera-demo
-```
-
-Model files are not included. See [Downloading Models](#downloading-models).
-
-### On Kria Board
-
-1. Ensure PYNQ environment is installed:
-   ```bash
-   source /usr/local/share/pynq-venv/bin/activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip3 install -r requirements.txt
-   ```
-
-3. Verify DPU bitstream exists:
-   ```bash
-   ls dpu.bit
-   ```
-
-4. Download and place model files in `models/` (see [Downloading Models](#downloading-models)).
-
-## Dependencies
-
-- **pyrealsense2** - Intel RealSense SDK (camera demo only)
-- **opencv-python** - Image processing and visualization
-- **numpy** - Numerical operations
-- **pynq_dpu** - PYNQ DPU overlay support
-- **vaitrace_py** - Vitis AI profiling (optional)
-
 ## Troubleshooting
 
 ### Vaitrace KeyError
 
-**Symptom:**
-```
-KeyError: '_fun_XXXXXX'
-```
+**Symptom:** `KeyError: '_fun_XXXXXX'`
 
-**Solution:**
-```bash
-./patch_vaitrace.sh
-```
+**Solution:** Run `./patch_vaitrace.sh`. This patches `/usr/bin/xlnx/vaitrace/tracer/function.py` to handle missing function symbols gracefully.
+
+---
 
 ### DPU Memory Error
 
-**Symptom:**
-```
-Check failed: fromdata != ((void *) -1)
-```
+**Symptom:** `Check failed: fromdata != ((void *) -1)`
 
 **Solution:** Don't use `XLNX_ENABLE_DUMP=1`. Use vaitrace instead.
 
+---
+
 ### Camera Not Detected
 
-**Solution:**
-- Ensure RealSense camera is connected via USB 3.0
-- Check camera with: `realsense-viewer`
+**Solution:** Ensure the RealSense camera is connected via USB 3.0. Test with `realsense-viewer`.
+
+---
 
 ### Permission Denied
 
-**Solution:** Run with `sudo` - required for DPU hardware access
+**Solution:** Run with `sudo` — required for DPU hardware access.
+
+---
 
 ### Module Not Found
 
-**Solution:**
-- Activate PYNQ environment: `source /usr/local/share/pynq-venv/bin/activate`
-- Or use full path: `/usr/local/share/pynq-venv/bin/python3`
+**Solution:** Activate the PYNQ environment first:
+```bash
+source /usr/local/share/pynq-venv/bin/activate
+# or use the full Python path:
+/usr/local/share/pynq-venv/bin/python3
+```
+
+---
 
 ### Wrong Kernel Name in meta.json
 
 **Symptom:** DPU runner fails to initialize or returns no results.
 
-**Solution:** Inspect the xmodel to find the correct subgraph name:
+**Solution:** Inspect the xmodel to find the correct subgraph name, then update `kernel` in `meta.json`:
 ```bash
 xir subgraph models/your_model/your_model.xmodel
 ```
-Update `kernel` in `meta.json` to match.
-
-## Performance Notes
-
-### Expected Performance (MobileNet V2)
-
-- **DPU Inference:** ~6ms (160+ FPS)
-- **Overall Throughput:** 25-35 FPS (with camera I/O and preprocessing)
-- **Preprocessing:** ~1-2ms
-- **Postprocessing:** <1ms
-
-### Optimization Tips
-
-1. Use synthetic benchmark to isolate DPU performance
-2. Run with sufficient frames (500+) for accurate statistics
-3. Apply vaitrace patch before profiling
-4. Check P95/P99 latencies for worst-case analysis
 
 ## Network Configuration
 
@@ -372,11 +361,11 @@ Update in `CLAUDE.md` if your board uses a different address.
 
 ## Contributing
 
-When adding new models:
+When adding a new model:
 1. Download the compiled `.xmodel` for target `DPUCZDX8G_ISA1_B4096`
 2. Create a directory under `models/` with the proper structure
 3. Add `meta.json`, `.prototxt`, and `md5sum.txt`
-4. Test with benchmark first: `./run_vaitrace.sh -m models/new_model -n 100`
+4. Test with the benchmark: `./run_vaitrace.sh -m models/new_model -n 100`
 
 ## Funding
 
